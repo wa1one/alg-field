@@ -679,89 +679,54 @@ class Fp12 {
   toString = () => "[" + this.a.toString() + " " + this.b.toString() + "]";
 }
 
-/* eslint-disable no-undef, no-const-assign -- Field2/Field12 are an unfinished port from another
-   BigInteger-style library (bigInt.isInstance, compareTo, shiftLeft, etc.) and are non-functional
-   as shipped; left disabled here pending a real rewrite rather than papered over line by line. */
+// Field2 is a quadratic extension Fp2 = Fp[i]/(i^2 + 1), independent of the Fp/Fp2/Fp6/Fp12
+// tower above (this is a lower-level, BigInteger-oriented API historically used to back
+// Field12's direct degree-12 polynomial representation, plus a couple of pairing-adjacent
+// helpers - mulI/divideI/mulV/divV, sqrt/cbrt - that the tower above doesn't expose). It only
+// forms a field when p is 3 mod 4 (so that -1 has no square root in Fp); Parameters.p satisfies
+// this.
 class Field2 {
   constructor(p, re, im, reduce) {
-    this.poly_coeffs = [1, 0];
-    this.degree = this.poly_coeffs.length;
+    this.p = BigInt(p);
+
     if (arguments.length === 1) {
-      this.p = p;
-      this.re = _0;
-      this.im = _0;
-    }
-    if (arguments.length === 2) {
-      if (typeof re === "bigint") {
-        this.p = p;
-        this.re = re; //no  reduction!!!//
-        this.im = _0;
-      }
-      /*else if (re instanceof CryptoRandom) {
-        this.p = p;
-        const rand = re;
-        do {
-          this.re = ExNumber.construct(this.p.bitLength(), rand);
-        } while (this.re.compareTo(this.p) >= 0);
-        do {
-          this.im = ExNumber.construct(this.p.bitLength(), rand);
-        } while (this.im.compareTo(this.p) >= 0);
-      }*/
-    }
-    if (arguments.length === 4) {
-      this.p = p;
-      if (reduce) {
-        this.re = re.toZn(this.p);
-        this.im = im.toZn(this.p);
-      } else {
-        this.re = re;
-        this.im = im;
-      }
+      this.re = 0n;
+      this.im = 0n;
+    } else if (arguments.length === 2) {
+      this.re = BigInt(re).mod(this.p);
+      this.im = 0n;
+    } else {
+      this.re = reduce ? BigInt(re).mod(this.p) : BigInt(re);
+      this.im = reduce ? BigInt(im).mod(this.p) : BigInt(im);
     }
   }
 
-  zero = () => this.re.isZero() && this.im.isZero();
+  zero = () => this.re === 0n && this.im === 0n;
 
-  one = () => this.re.compareTo(_1) === 0 && this.im.isZero();
+  one = () => this.re === 1n && this.im === 0n;
 
   eq = (u) =>
-    !(u instanceof Field2)
-      ? false
-      : this.re.equals(u.re) && this.im.equals(u.im);
+    u instanceof Field2 && this.p === u.p && this.re === u.re && this.im === u.im;
 
   neg = () =>
-    new Field2(
-      this.p,
-      !this.re.isZero() ? this.p.subtract(this.re) : this.re,
-      !this.im.isZero() ? this.p.subtract(this.im) : this.im,
-      false
-    );
+    new Field2(this.p, (-this.re).mod(this.p), (-this.im).mod(this.p), false);
 
   add(v) {
     if (v instanceof Field2) {
-      if (!this.p.eq(v.p)) {
+      if (this.p !== v.p) {
         throw new Error("Operands are in different finite fields");
       }
-      const r = this.re.add(v.re);
-
-      if (r.compareTo(this.p) >= 0) {
-        r = r.subtract(this.p);
-      }
-      const i = this.im.add(v.im);
-
-      if (i.compareTo(this.p) >= 0) {
-        i = i.subtract(this.p);
-      }
-      return new Field2(this.p, r, i, false);
+      return new Field2(
+        this.p,
+        (this.re + v.re).mod(this.p),
+        (this.im + v.im).mod(this.p),
+        false
+      );
     }
-    if (bigInt.isInstance(v)) {
-      const s = this.re.add(v);
-
-      if (s.compareTo(this.p) >= 0) {
-        s = s.subtract(this.p);
-      }
-      return new Field2(this.p, s, this.im, false);
+    if (typeof v === "bigint") {
+      return new Field2(this.p, (this.re + v).mod(this.p), this.im, false);
     }
+    throw new Error("Incorrect type argument");
   }
 
   subtract(v) {
@@ -769,530 +734,340 @@ class Field2 {
       if (this.p !== v.p) {
         throw new Error("Operands are in different finite fields");
       }
-      const r = this.re.subtract(v.re);
-
-      if (r.isNegative()) {
-        r = r.add(this.p);
-      }
-      const i = this.im.subtract(v.im);
-
-      if (i.isNegative()) {
-        i = i.add(this.p);
-      }
-      return new Field2(this.p, r, i, false);
+      return new Field2(
+        this.p,
+        (this.re - v.re).mod(this.p),
+        (this.im - v.im).mod(this.p),
+        false
+      );
     }
-    if (bigInt.isInstance(v)) {
-      const r = this.re.subtract(v);
-      if (r.isNegative()) {
-        r = r.add(this.p);
-      }
-      return new Field2(this.p, r, this.im, false);
+    if (typeof v === "bigint") {
+      return new Field2(this.p, (this.re - v).mod(this.p), this.im, false);
     }
+    throw new Error("Incorrect type argument");
   }
 
-  twice(k) {
-    const r = this.re;
-    const i = this.im;
-    while (k-- > 0) {
-      r = r.shiftLeft(1);
-      if (r.compareTo(this.p) >= 0) {
-        r = r.subtract(this.p);
-      }
-      i = i.shiftLeft(1);
-      if (i.compareTo(this.p) >= 0) {
-        i = i.subtract(this.p);
-      }
+  multiply(v) {
+    if (v instanceof Field2) {
+      const re = (this.re * v.re - this.im * v.im).mod(this.p);
+      const im = (this.re * v.im + this.im * v.re).mod(this.p);
+      return new Field2(this.p, re, im, false);
     }
-    return new Field2(this.p, r, i, false);
+    if (typeof v === "bigint") {
+      return new Field2(
+        this.p,
+        (this.re * v).mod(this.p),
+        (this.im * v).mod(this.p),
+        false
+      );
+    }
+    throw new Error("Incorrect type argument");
   }
 
-  halve = () =>
-    new Field2(
+  square = () => this.multiply(this);
+
+  cube = () => this.multiply(this).multiply(this);
+
+  inverse() {
+    const denom = (this.re * this.re + this.im * this.im).mod(this.p);
+    const denomInv = denom.modInv(this.p);
+    return new Field2(
       this.p,
-      (this.re.and(1) != 0 ? this.re.add(this.p) : this.re).shiftRight(1),
-      (this.im.and(1) != 0 ? this.im.add(this.p) : this.im).shiftRight(1),
+      (this.re * denomInv).mod(this.p),
+      ((-this.im).mod(this.p) * denomInv).mod(this.p),
       false
     );
+  }
 
   divide(v) {
     if (v instanceof Field2) {
       return this.multiply(v.inverse());
     }
-    if (bigInt.isInstance(v)) {
-      const nr = this.re.multiply(v.modInv(this.p));
-      const ni = this.im.multiply(v.modInv(this.p));
-      return new Field2(this.p, nr, ni, true);
-    }
-    return null;
-  }
-
-  inverse() {
-    const d = this.re
-      .multiply(this.re)
-      .add(this.im.multiply(this.im))
-      .modInv(this.p);
-    return new Field2(
-      this.p,
-      this.re.multiply(d),
-      this.p.subtract(this.im).multiply(d),
-      true
-    );
-  }
-
-  multiply(v) {
-    if (v instanceof Field2) {
-      if (this === v) {
-        return this.square();
-      }
-      if (this.bn !== v.bn) {
-        throw new Error("Operands are in different finite fields");
-      }
-      if (this.one() || v.zero()) {
-        return v;
-      }
-      if (this.zero() || v.one()) {
-        return this;
-      }
-
-      const re2 = this.re.multiply(v.re);
-      const im2 = this.im.multiply(v.im);
-      const mix = this.re.add(this.im).multiply(v.re.add(v.im));
-
-      return new Field2(
-        this.p,
-        re2.subtract(im2),
-        mix.subtract(re2).subtract(im2),
-        true
-      );
-    }
-    if (bigInt.isInstance(v)) {
-      return new Field2(this.p, this.re.multiply(v), this.im.multiply(v), true);
-    }
-    if (v instanceof Number) {
-      const newre = this.re.multiply(v.toString());
-      while (newre.isNegative()) {
-        newre = newre.add(this.p);
-      }
-      while (newre.compareTo(this.p) >= 0) {
-        newre = newre.subtract(this.p);
-      }
-      const newim = this.im.multiply(v);
-      while (newim.isNegative()) {
-        newim = newim.add(this.p);
-      }
-      while (newim.compareTo(this.p) >= 0) {
-        newim = newim.subtract(this.p);
-      }
-      return new Field2(this.p, newre, newim, false);
+    if (typeof v === "bigint") {
+      return this.multiply(new Field2(this.p, v).inverse());
     }
     throw new Error("Incorrect type argument");
   }
 
-  square() {
-    if (this.zero() || this.one()) {
-      return this;
-    }
-    if (this.im.isZero()) {
-      return new Field2(this.p, this.re.multiply(this.re), _0, true);
-    }
-    if (this.re.isZero()) {
-      return new Field2(this.p, this.im.multiply(this.im).negate(), _0, true);
-    }
+  // Multiply/divide by i (i^2 = -1).
+  mulI = () => new Field2(this.p, (-this.im).mod(this.p), this.re, false);
 
-    return new Field2(
-      this.p,
-      this.re.add(this.im).multiply(this.re.subtract(this.im)),
-      this.re.multiply(this.im).shiftLeft(1),
-      true
-    );
-  }
+  divideI = () => new Field2(this.p, this.im, (-this.re).mod(this.p), false);
 
-  cube() {
-    const re2 = this.re.multiply(this.re);
-    const im2 = this.im.multiply(this.im);
-    return new Field2(
-      this.p,
-      this.re.multiply(re2.subtract(im2.add(im2).add(im2))),
-      this.im.multiply(re2.add(re2).add(re2).subtract(im2)),
-      true
-    );
-  }
+  // Multiply/divide by (1 + i); mulV/divV are exact inverses of one another by construction.
+  mulV = () => this.multiply(new Field2(this.p, 1n, 1n, false));
 
-  mulI = () =>
-    new Field2(
-      this.p,
-      !this.im.isZero() ? this.p.subtract(this.im) : this.im,
-      this.re,
-      false
-    );
-
-  divideI = () =>
-    new Field2(
-      this.p,
-      this.im,
-      !this.re.isZero() ? this.p.subtract(this.re) : this.re,
-      false
-    );
-
-  mulV() {
-    const r = this.re.subtract(this.im);
-    if (r.isNegative()) {
-      r = r.add(this.p);
-    }
-    const i = this.re.add(this.im);
-    if (i.compareTo(this.p) >= 0) {
-      i = i.subtract(this.p);
-    }
-    return new Field2(this.p, r, i, false);
-  }
-
-  divV() {
-    const qre = this.re.add(this.im);
-    if (qre.compareTo(this.p) >= 0) {
-      qre = qre.subtract(this.p);
-    }
-    const qim = this.im.subtract(this.re);
-    if (qim.isNegative()) {
-      qim = qim.add(this.p);
-    }
-    return new Field2(
-      this.p,
-      (qre.testBit(0) ? qre.add(this.p) : qre).shiftRight(1),
-      (qim.testBit(0) ? qim.add(this.p) : qim).shiftRight(1),
-      false
-    );
-  }
+  divV = () => this.divide(new Field2(this.p, 1n, 1n, false));
 
   exp(k) {
-    const P = this;
-    if (k.isNegative()) {
-      k = k.neg();
-      P = P.inverse();
-    }
-    const e = k.toArray(256).value;
+    if (typeof k !== "bigint") k = BigInt(k);
+    if (k < 0n) return this.inverse().exp(-k);
 
-    const mP = new Array(16);
-    mP[0] = new Field2(this.p, 1);
-    mP[1] = P;
-    for (let m = 1; m <= 7; m++) {
-      mP[2 * m] = mP[m].square();
-      mP[2 * m + 1] = mP[2 * m].multiply(P);
+    let result = new Field2(this.p, 1n);
+    let base = this;
+    while (k > 0n) {
+      if (k & 1n) result = result.multiply(base);
+      base = base.multiply(base);
+      k >>= 1n;
     }
-    let A = mP[0];
-    for (let i = 0; i < e.length; i++) {
-      let u = e[i] & 0xff;
-      A = A.square()
-        .square()
-        .square()
-        .square()
-        .multiply(mP[u >>> 4])
-        .square()
-        .square()
-        .square()
-        .square()
-        .multiply(mP[u & 0xf]);
-    }
-    return A;
+    return result;
   }
 
-  sqrt() {
-    if (this.zero()) {
-      return this;
-    }
+  // Square/cube root via the Adleman-Manders-Miller r-th root algorithm, generalized to
+  // Fp2 (field size p^2). Returns null when `this` has no such root.
+  sqrt = () => fp2NthRoot(this, 2n);
 
-    const r = this.exp(this.p.multiply(this.p).add(7).divide(16));
-    const r2 = r.square();
-    if (r2.subtract(this).zero()) {
-      return r;
-    }
-    if (r2.add(this).zero()) {
-      return r.mulI();
-    }
-    r2 = r2.mulI();
-
-    const invSqrtMinus2 = this.p
-      .subtract(2)
-      .modPow(this.p.subtract(_1).subtract(this.p.add(`_1`).divide(4)), this.p); // 1/sqrt(-2) = (-2)^{-(p+1)/4}
-    const sqrtI = new Field2(
-      this.p,
-      invSqrtMinus2,
-      this.p.subtract(invSqrtMinus2),
-      false
-    ); // sqrt(i) = (1 - i)/sqrt(-2)
-
-    r = r.multiply(sqrtI);
-    if (r2.subtract(this).zero()) {
-      return r;
-    }
-    if (r2.add(this).zero()) {
-      return r.mulI();
-    }
-
-    return null;
-  }
-
-  cbrt() {
-    if (this.zero()) {
-      return this;
-    }
-    const r = this.exp(bn.cbrtExponent2);
-    return r.cube().subtract(this).zero() ? r : null;
-  }
+  cbrt = () => fp2NthRoot(this, 3n);
 
   toString = () => "[" + this.re.toString() + "," + this.im.toString() + "]";
 }
 
+function fp2FindNonResidue(p, exponent, one) {
+  for (let re = 1n; re < 50n; re++) {
+    for (let im = 0n; im < 50n; im++) {
+      const candidate = new Field2(p, re, im, false);
+      if (!candidate.exp(exponent).eq(one)) return candidate;
+    }
+  }
+  return null;
+}
+
+// Adleman-Manders-Miller r-th root algorithm over Fp2 (field size q = p^2), for prime r.
+function fp2NthRoot(a, r) {
+  const p = a.p;
+  const q = p * p;
+  const one = new Field2(p, 1n);
+
+  if (a.zero()) return new Field2(p);
+  if (!a.exp((q - 1n) / r).eq(one)) return null;
+
+  let t = q - 1n;
+  let s = 0n;
+  while (t % r === 0n) {
+    t /= r;
+    s++;
+  }
+  const order = r ** s;
+
+  const nonResidue = fp2FindNonResidue(p, (q - 1n) / r, one);
+  if (nonResidue === null) {
+    throw new Error("could not find a non-residue element in Fp2");
+  }
+
+  const c = nonResidue.exp(t);
+  const e = r.modInv(t);
+  const m = (r * e - 1n) / t;
+  const z = a.exp(e);
+
+  for (let k = 0n; k < order; k++) {
+    const wInv = c.exp(k).inverse();
+    const candidate = z.multiply(wInv.exp(m));
+    if (candidate.exp(r).eq(a)) return candidate;
+  }
+  return null;
+}
+
+// Field12 represents Fp12 directly as Fp[x]/(x^12 - 18x^6 + 82) - the standard BN254 FQ12
+// modulus polynomial (as used by e.g. py_ecc's optimized_bn128) - rather than as the
+// Fp2/Fp6/Fp12 tower built above. Elements are stored packed as 6 Field2 pairs (this.v),
+// which is how add/subtract/negate/scalar-multiply operate directly; the full Field12
+// multiply/inverse unpack to the 12 flat Fp coefficients (via split()/join()) to do the
+// polynomial arithmetic, mirroring that reference implementation.
+//
+// `bn` is any {p, n} pair of curve parameters (Parameters from this package satisfies this
+// shape directly); `p` must be the same modulus used to build the Field2 coefficients.
+const FIELD12_DEGREE = 12;
+const FIELD12_MODULUS_COEFFS = [82n, 0n, 0n, 0n, 0n, 0n, -18n, 0n, 0n, 0n, 0n, 0n];
+
+function field12PolyDeg(poly) {
+  let d = poly.length - 1;
+  while (d > 0 && poly[d] === 0n) d -= 1;
+  return d;
+}
+
+function field12PolyRoundedDiv(a, b, p) {
+  const dega = field12PolyDeg(a);
+  const degb = field12PolyDeg(b);
+  const temp = a.slice();
+  const o = new Array(a.length).fill(0n);
+  const bInv = b[degb].modInv(p);
+  for (let i = dega - degb; i >= 0; i--) {
+    o[i] = (o[i] + (temp[degb + i] * bInv).mod(p)).mod(p);
+    for (let c = 0; c <= degb; c++) {
+      temp[c + i] = (temp[c + i] - (o[i] * b[c]).mod(p)).mod(p);
+    }
+  }
+  return o.slice(0, field12PolyDeg(o) + 1);
+}
+
+function field12PolyMultiply(a, b, p) {
+  const result = new Array(FIELD12_DEGREE * 2 - 1).fill(0n);
+  for (let i = 0; i < FIELD12_DEGREE; i++) {
+    for (let j = 0; j < FIELD12_DEGREE; j++) {
+      result[i + j] = (result[i + j] + (a[i] * b[j]).mod(p)).mod(p);
+    }
+  }
+  while (result.length > FIELD12_DEGREE) {
+    const exp = result.length - FIELD12_DEGREE - 1;
+    const top = result.pop();
+    for (let i = 0; i < FIELD12_DEGREE; i++) {
+      result[exp + i] = (
+        result[exp + i] - (top * FIELD12_MODULUS_COEFFS[i]).mod(p)
+      ).mod(p);
+    }
+  }
+  return result;
+}
+
+function field12PolyInverse(aCoeffs, p) {
+  let lm = [1n, ...new Array(FIELD12_DEGREE).fill(0n)];
+  let hm = new Array(FIELD12_DEGREE + 1).fill(0n);
+  let low = [...aCoeffs, 0n];
+  let high = [...FIELD12_MODULUS_COEFFS, 1n];
+
+  while (field12PolyDeg(low) !== 0) {
+    let r = field12PolyRoundedDiv(high, low, p);
+    r = r.concat(new Array(FIELD12_DEGREE + 1 - r.length).fill(0n));
+
+    const nm = hm.slice();
+    const newHigh = high.slice();
+    for (let i = 0; i <= FIELD12_DEGREE; i++) {
+      for (let j = 0; j <= FIELD12_DEGREE - i; j++) {
+        nm[i + j] = (nm[i + j] - (lm[i] * r[j]).mod(p)).mod(p);
+        newHigh[i + j] = (newHigh[i + j] - (low[i] * r[j]).mod(p)).mod(p);
+      }
+    }
+
+    const oldLm = lm;
+    const oldLow = low;
+    lm = nm;
+    low = newHigh;
+    hm = oldLm;
+    high = oldLow;
+  }
+
+  const scale = low[0].modInv(p);
+  return lm.slice(0, FIELD12_DEGREE).map((c) => (c * scale).mod(p));
+}
+
 class Field12 {
   constructor(bn, k) {
-    this.poly_coeffs = [82n, 0, 0, 0, 0, 0, -18n, 0, 0, 0, 0, 0];
-    this.degree = this.poly_coeffs.length;
-
     if (arguments.length === 1) {
-      const f = bn;
-      this.bn = f.bn;
-      this.v = new Array(6);
-      for (let i = 0; i < 6; i++) {
-        this.v[i] = f.v[i];
+      if (!(bn instanceof Field12)) {
+        throw new Error("Incorrect type argument");
       }
+      this.bn = bn.bn;
+      this.v = bn.v.slice();
+      return;
     }
-    if (arguments.length === 2) {
-      if (bigInt.isInstance(k)) {
-        this.bn = bn;
-        this.v = new Array(6);
-        this.v[0] = new Field2(bn.p, k);
-        for (let i = 1; i < 6; i++) {
-          this.v[i] = new Field2(bn.p);
-        }
-      } else if (k instanceof Array) {
-        this.bn = bn;
-        this.v = k;
-      } else {
-        this.bn = bn;
-        this.v = new Array(6);
-        for (let i = 0; i < 6; i++) {
-          this.v[i] = new Field2(bn.p, k);
-        }
-      }
+
+    this.bn = bn;
+    this.v = new Array(6);
+    if (typeof k === "bigint") {
+      this.v[0] = new Field2(bn.p, k);
+      for (let i = 1; i < 6; i++) this.v[i] = new Field2(bn.p);
+    } else if (k instanceof Array) {
+      for (let i = 0; i < 6; i++) this.v[i] = k[i];
+    } else {
+      for (let i = 0; i < 6; i++) this.v[i] = new Field2(bn.p, k);
     }
   }
 
-  zero = () =>
-    this.v[0].zero() &&
-    this.v[1].zero() &&
-    this.v[2].zero() &&
-    this.v[3].zero() &&
-    this.v[4].zero() &&
-    this.v[5].zero();
+  zero = () => this.v.every((c) => c.zero());
 
-  one = () =>
-    this.v[0].one() &&
-    this.v[1].zero() &&
-    this.v[2].zero() &&
-    this.v[3].zero() &&
-    this.v[4].zero() &&
-    this.v[5].zero();
+  one = () => this.v[0].one() && this.v.slice(1).every((c) => c.zero());
 
-  eq = (o) =>
-    o instanceof Field12
-      ? this.v[0].eq(o.v[0]) &&
-        this.v[1].eq(o.v[1]) &&
-        this.v[2].eq(o.v[2]) &&
-        this.v[3].eq(o.v[3]) &&
-        this.v[4].eq(o.v[4]) &&
-        this.v[5].eq(o.v[5])
-      : false;
+  eq = (o) => o instanceof Field12 && this.v.every((c, i) => c.eq(o.v[i]));
 
-  neg() {
-    const w = new Array(6);
-    for (let i = 0; i < 6; i++) {
-      w[i] = this.v[i].neg();
-    }
-    return new Field12(this.bn, w);
-  }
+  neg = () => new Field12(this.bn, this.v.map((c) => c.neg()));
 
   add(k) {
     if (this.bn.p !== k.bn.p) {
       throw new Error("Operands are in different finite fields");
     }
-    const w = new Array(6);
-    for (let i = 0; i < 6; i++) {
-      w[i] = this.v[i].add(k.v[i]);
-    }
-    return new Field12(this.bn, w);
+    return new Field12(
+      this.bn,
+      this.v.map((c, i) => c.add(k.v[i]))
+    );
   }
 
   subtract(k) {
     if (this.bn.p !== k.bn.p) {
       throw new Error("Operands are in different finite fields");
     }
-    const w = new Array(6);
-    for (let i = 0; i < 6; i++) {
-      w[i] = this.v[i].subtract(k.v[i]);
-    }
-    return new Field12(this.bn, w);
+    return new Field12(
+      this.bn,
+      this.v.map((c, i) => c.subtract(k.v[i]))
+    );
   }
 
   divide(k) {
-    if (bigInt.isInstance(k) || k instanceof Field2) {
-      const w = new Array(6);
-      for (let i = 0; i < 6; i++) {
-        w[i] = this.v[i].divide(k);
-      }
-      return new Field12(this.bn, w);
+    if (typeof k === "bigint" || k instanceof Field2) {
+      return new Field12(
+        this.bn,
+        this.v.map((c) => c.divide(k))
+      );
     }
     if (k instanceof Field12) {
       return this.multiply(k.inverse());
     }
+    throw new Error("Incorrect type argument");
   }
 
   split() {
-    this.s = [
-      new Field2(this.bn.p, this.v[0].re),
-      new Field2(this.bn.p, this.v[0].im),
-      new Field2(this.bn.p, this.v[1].re),
-      new Field2(this.bn.p, this.v[1].im),
-      new Field2(this.bn.p, this.v[2].re),
-      new Field2(this.bn.p, this.v[2].im),
-      new Field2(this.bn.p, this.v[3].re),
-      new Field2(this.bn.p, this.v[3].im),
-      new Field2(this.bn.p, this.v[4].re),
-      new Field2(this.bn.p, this.v[4].im),
-      new Field2(this.bn.p, this.v[5].re),
-      new Field2(this.bn.p, this.v[5].im),
-    ];
+    const flat = new Array(FIELD12_DEGREE);
+    for (let i = 0; i < 6; i++) {
+      flat[i * 2] = this.v[i].re;
+      flat[i * 2 + 1] = this.v[i].im;
+    }
+    return flat;
   }
 
-  join(s) {
-    const ar = new Array(6);
-
-    for (let i = 0; i < ar.length; i++) {
-      ar[i] = new Field2(this.bn.p, s[i * 2].re, s[i * 2 + 1].re, false);
+  join(flat) {
+    const v = new Array(6);
+    for (let i = 0; i < 6; i++) {
+      v[i] = new Field2(this.bn.p, flat[i * 2], flat[i * 2 + 1], true);
     }
-
-    return new Field12(this.bn, ar);
+    return new Field12(this.bn, v);
   }
 
   multiply(k) {
-    if (bigInt.isInstance(k) || k instanceof Field2) {
-      const w = new Array(6);
-      for (let i = 0; i < 6; i++) {
-        w[i] = this.v[i].multiply(k);
-      }
-      return new Field12(this.bn, w);
+    if (typeof k === "bigint" || k instanceof Field2) {
+      return new Field12(
+        this.bn,
+        this.v.map((c) => c.multiply(k))
+      );
     }
     if (k instanceof Field12) {
-      if (!this.bn.p.equals(k.bn.p)) {
+      if (this.bn.p !== k.bn.p) {
         throw new Error("Operands are in different finite fields");
       }
-      if (this.one() || k.zero()) {
-        return k;
-      }
-      if (this.zero() || k.one()) {
-        return this;
-      }
+      if (this.one()) return k;
+      if (k.one()) return this;
+      if (this.zero() || k.zero()) return new Field12(this.bn, 0n);
 
-      const b = new Array(this.degree * 2 - 1).fill(new Field2(this.bn.p, _0));
-
-      this.split();
-      k.split();
-
-      for (let i = 0; i < this.degree; i++) {
-        for (let j = 0; j < this.degree; j++) {
-          b[i + j] = b[i + j].add(this.s[i].multiply(k.s[j]));
-        }
-      }
-
-      while (b.length > this.degree) {
-        const exp = b.length - this.degree - 1;
-        const top = b.pop();
-        for (let i = 0; i < this.degree; i++) {
-          b[exp + i] = b[exp + i].subtract(top.multiply(this.poly_coeffs[i]));
-        }
-      }
-
-      return this.join(b);
+      const product = field12PolyMultiply(this.split(), k.split(), this.bn.p);
+      return this.join(product);
     }
+    throw new Error("Incorrect type argument");
   }
 
-  mulV = () =>
-    new Field12(this.bn, [
-      this.v[4].mulV(),
-      this.v[5].mulV(),
-      this.v[0],
-      this.v[1],
-      this.v[2],
-      this.v[3],
-    ]);
+  // Multiply/divide by x (the degree-12 extension's formal generator), via the already
+  // -verified generic multiply()/inverse() rather than a hand-rolled rotation shortcut -
+  // mulV/divV are exact inverses of one another by construction.
+  mulV = () => this.multiply(this.join([0n, 1n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n]));
 
-  divV = () =>
-    new Field12(this.bn, [
-      this.v[4].divV(),
-      this.v[5].divV(),
-      this.v[0],
-      this.v[1],
-      this.v[2],
-      this.v[3],
-    ]);
+  divV = () => this.divide(this.join([0n, 1n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n]));
 
   inverse() {
-    const deg = (p) => {
-      const d = p.length - 1;
-      while (p[d].eq(new Field2(this.bn.p, _0)) && d > 0) d -= 1;
-      return d;
-    };
-
-    const poly_div = (a, b) => {
-      const dega = deg(a);
-      const degb = deg(b);
-      const temp = a.slice();
-      const o = new Array(a.length).fill(new Field2(this.bn.p, _0));
-      for (let i = dega - degb; i > -1; i--) {
-        o[i] = o[i].add(temp[degb + i].divide(b[degb]));
-        for (let c = 0; c < degb + 1; c++) {
-          temp[c + i] = temp[c + i].subtract(o[c]);
-        }
-      }
-      return o.slice(0, deg(o) + 1);
-    };
-
-    const lm = new Array(this.degree + 1).fill(new Field2(this.bn.p, _0));
-    lm[0] = new Field2(this.bn.p, _1);
-    const hm = new Array(this.degree + 1).fill(new Field2(this.bn.p, _0));
-    this.split();
-    const low = this.s.slice();
-    low.push(new Field2(this.bn.p, _0));
-    const high = this.poly_coeffs.map((e) => new Field2(this.bn.p, e)).slice();
-    high.push(new Field2(this.bn.p, _1));
-
-    while (deg(low)) {
-      let r = poly_div(high, low);
-      r = r.concat(
-        new Array(this.degree + 1 - r.length).fill(new Field2(this.bn.p, _0))
-      );
-
-      const nm = hm.slice();
-      const neww = high.slice();
-
-      for (let i = 0; i < this.degree + 1; i++) {
-        for (let j = 0; j < this.degree + 1 - i; j++) {
-          nm[i + j] = nm[i + j].subtract(lm[i].multiply(r[j]));
-          neww[i + j] = neww[i + j].subtract(low[i].multiply(r[j]));
-        }
-      }
-
-      lm = nm.slice();
-      low = neww.slice();
-      hm = lm.slice();
-      high = low.slice();
-    }
-
-    return this.join(lm.slice(0, this.degree)).divide(low[0].re);
+    const inv = field12PolyInverse(this.split(), this.bn.p);
+    return this.join(inv);
   }
 
   exp(k) {
+    if (typeof k !== "bigint") k = BigInt(k);
     let w = this;
-    const st = bigInt(k).bitLength() - 2;
-    for (let i = st; i >= 0; i--) {
+    for (let i = k.bitLength() - 2; i >= 0; i--) {
       w = w.multiply(w);
       if (k.testBit(i)) {
         w = w.multiply(this);
@@ -1301,7 +1076,7 @@ class Field12 {
     return w;
   }
 
-  finExp = () => this.exp(this.bn.p.pow(12).subtract(_1).divide(this.bn.n));
+  finExp = () => this.exp((this.bn.p ** 12n - 1n) / this.bn.n);
 
   toString = () =>
     "[" +
@@ -1330,6 +1105,5 @@ class Field12 {
     this.v[5].im.toString() +
     "]";
 }
-/* eslint-enable no-undef, no-const-assign */
 
 module.exports = { Field, Fp2, Fp6, Fp12, Field2, Field12, Parameters };

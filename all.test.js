@@ -1,8 +1,4 @@
-const { Field, Fp2, Fp6, Fp12, Parameters } = require("./src");
-
-// Field2/Field12 are an unfinished port of a different BigInteger-style API
-// (see the eslint-disable block around them in src/index.js) and throw on any
-// call as shipped. They're intentionally left untested until rewritten.
+const { Field, Fp2, Fp6, Fp12, Field2, Field12, Parameters } = require("./src");
 
 describe("Fields", function () {
   test("Field without extensions test", function () {
@@ -387,5 +383,154 @@ describe("Fp12", function () {
 
   test("toString", function () {
     expect(f.toString()).toEqual("[[1, 2, 3, 4, 5, 6] [7, 8, 9, 10, 11, 12]]");
+  });
+});
+
+// Field2/Field12 represent Fp2/Fp12 directly (Field2 = Fp[i]/(i^2+1), Field12 =
+// Fp[x]/(x^12-18x^6+82)), independent of the Fp2/Fp6/Fp12 tower above. They're only valid
+// fields for a modulus p = 3 (mod 4); Parameters.p satisfies this.
+describe("Field2", function () {
+  const p = Parameters.p;
+  const one = new Field2(p, 1n);
+  const f = new Field2(p, 3n, 5n, false);
+
+  test("constructor variants", function () {
+    expect(new Field2(p).zero()).toBeTruthy();
+    expect(new Field2(p, 7n).eq(new Field2(p, 7n, 0n, false))).toBeTruthy();
+    expect(new Field2(p, -1n, -1n, true).re).toEqual(p - 1n);
+  });
+
+  test("zero/one", function () {
+    expect(new Field2(p).zero()).toBeTruthy();
+    expect(one.one()).toBeTruthy();
+    expect(f.zero()).toBeFalsy();
+  });
+
+  test("eq rejects non-Field2 values", function () {
+    expect(f.eq({})).toBeFalsy();
+    expect(f.eq(null)).toBeFalsy();
+  });
+
+  test("additive identity and inverse", function () {
+    expect(f.add(new Field2(p)).eq(f)).toBeTruthy();
+    expect(f.add(f.neg()).zero()).toBeTruthy();
+  });
+
+  test("multiplicative identity and inverse", function () {
+    expect(f.multiply(one).eq(f)).toBeTruthy();
+    expect(f.multiply(f.inverse()).eq(one)).toBeTruthy();
+  });
+
+  test("divide matches multiplying by the inverse", function () {
+    const g = new Field2(p, 11n, 13n, false);
+    expect(f.divide(g).eq(f.multiply(g.inverse()))).toBeTruthy();
+  });
+
+  test("square and cube match repeated multiplication", function () {
+    expect(f.square().eq(f.multiply(f))).toBeTruthy();
+    expect(f.cube().eq(f.multiply(f).multiply(f))).toBeTruthy();
+  });
+
+  test("exp matches repeated multiplication", function () {
+    expect(f.exp(3n).eq(f.multiply(f).multiply(f))).toBeTruthy();
+  });
+
+  test("mulI/divideI are inverses, and i^2 = -1", function () {
+    expect(f.mulI().divideI().eq(f)).toBeTruthy();
+    expect(f.mulI().mulI().eq(f.neg())).toBeTruthy();
+  });
+
+  test("mulV/divV are inverses", function () {
+    expect(f.mulV().divV().eq(f)).toBeTruthy();
+    expect(f.divV().mulV().eq(f)).toBeTruthy();
+  });
+
+  test("sqrt returns a value whose square is the input", function () {
+    const square = f.multiply(f);
+    const root = square.sqrt();
+    expect(root).not.toBeNull();
+    expect(root.multiply(root).eq(square)).toBeTruthy();
+  });
+
+  test("sqrt returns null for a non-residue", function () {
+    // (1,2) is a verified non-quadratic-residue in this Fp2; a square times a non-residue
+    // is itself a non-residue, so it must have no square root.
+    const nonResidueConst = new Field2(p, 1n, 2n, false);
+    const nonResidue = f.multiply(f).multiply(nonResidueConst);
+    expect(nonResidue.sqrt()).toBeNull();
+  });
+
+  test("cbrt returns a value whose cube is the input", function () {
+    const cube = f.multiply(f).multiply(f);
+    const root = cube.cbrt();
+    expect(root).not.toBeNull();
+    expect(root.multiply(root).multiply(root).eq(cube)).toBeTruthy();
+  });
+
+  test("toString", function () {
+    expect(f.toString()).toEqual("[3,5]");
+  });
+});
+
+describe("Field12", function () {
+  const p = Parameters.p;
+  const bn = Parameters;
+  const one = new Field12(bn, 1n);
+  const f = new Field12(bn, [
+    new Field2(p, 1n, 2n),
+    new Field2(p, 3n, 4n),
+    new Field2(p, 5n, 6n),
+    new Field2(p, 7n, 8n),
+    new Field2(p, 9n, 10n),
+    new Field2(p, 11n, 12n),
+  ]);
+
+  test("constructor variants", function () {
+    expect(new Field12(bn, 0n).zero()).toBeTruthy();
+    expect(one.one()).toBeTruthy();
+    expect(new Field12(f).eq(f)).toBeTruthy(); // clone constructor
+  });
+
+  test("eq rejects non-Field12 values", function () {
+    expect(f.eq({})).toBeFalsy();
+  });
+
+  test("additive identity and inverse", function () {
+    expect(f.add(new Field12(bn, 0n)).eq(f)).toBeTruthy();
+    expect(f.add(f.neg()).zero()).toBeTruthy();
+  });
+
+  test("multiplicative identity and inverse", function () {
+    expect(f.multiply(one).eq(f)).toBeTruthy();
+    expect(f.multiply(f.inverse()).eq(one)).toBeTruthy();
+  });
+
+  test("multiply by a scalar matches per-component scalar multiplication", function () {
+    const scaled = f.multiply(3n);
+    expect(scaled.eq(new Field12(bn, f.v.map((c) => c.multiply(3n))))).toBeTruthy();
+  });
+
+  test("divide matches multiplying by the inverse", function () {
+    const g = f.add(one);
+    expect(f.divide(g).eq(f.multiply(g.inverse()))).toBeTruthy();
+  });
+
+  test("mulV/divV are inverses", function () {
+    expect(f.mulV().divV().eq(f)).toBeTruthy();
+    expect(f.divV().mulV().eq(f)).toBeTruthy();
+  });
+
+  test("exp matches repeated multiplication", function () {
+    expect(f.exp(3n).eq(f.multiply(f).multiply(f))).toBeTruthy();
+  });
+
+  test("finExp of the identity is the identity", function () {
+    expect(one.finExp().eq(one)).toBeTruthy();
+  });
+
+  test("toString", function () {
+    expect(f.toString()).toEqual(
+      "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]"
+    );
   });
 });

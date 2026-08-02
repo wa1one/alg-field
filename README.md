@@ -105,13 +105,54 @@ Quadratic extension of `Fp6`, `a + b·w`. Used as the pairing target group.
 - `.eq(o)` — component-wise equality; `true` for `this === o`, `false` for non-`Fp12` values.
 - `.toString()` — `"[[a] [b]]"`.
 
-### `Field2`, `Field12`
+### `Field2`
 
-Exported but **not functional**. These are an unfinished port of a different BigInteger-style
-API (`bigInt.isInstance`, `.compareTo()`, `.shiftLeft()`, `.modPow()`, etc.) that was never wired
-up to a real dependency — every method throws or returns a wrong result as shipped. Use `Fp2`/
-`Fp12` above instead; `Field2`/`Field12` are kept only for backwards compatibility of the export
-shape until they're rewritten or removed.
+An independent `Fp2 = Fp[i]/(i² + 1)` implementation (`i² = -1`), separate from the `Fp2` tower
+above. Only forms a field when the modulus is `≡ 3 (mod 4)` (so `-1` has no square root in `Fp`);
+`Parameters.p` satisfies this. Backs `Field12`'s direct polynomial representation and adds a few
+pairing-adjacent helpers (`mulI`/`mulV`, `sqrt`/`cbrt`) that the `Fp2` tower above doesn't expose.
+
+- `new Field2(p, re?, im?, reduce?)` — `new Field2(p)` is `0`; `new Field2(p, re)` embeds a
+  base-field scalar; `new Field2(p, re, im, reduce)` sets both components, reducing mod `p`
+  first when `reduce` is `true`.
+- `.zero()` / `.one()` — identity checks.
+- `.eq(o)` — component-wise equality; `false` for non-`Field2` values.
+- `.add(o)` / `.subtract(o)` / `.multiply(o)` / `.divide(o)` — accept another `Field2`, or (for
+  `add`/`subtract`/`multiply`) a raw `bigint` scalar.
+- `.neg()` / `.square()` / `.cube()` / `.inverse()` — shorthand arithmetic.
+- `.mulI()` / `.divideI()` — multiply/divide by `i`.
+- `.mulV()` / `.divV()` — multiply/divide by `(1 + i)`; exact inverses of one another.
+- `.exp(k)` — modular exponentiation by `k` (`bigint` or coercible; negative exponents invert
+  first).
+- `.sqrt()` / `.cbrt()` — square/cube root via the Adleman–Manders–Miller algorithm generalized
+  to `Fp2`; returns `null` when no such root exists.
+- `.toString()` — `"[re,im]"`.
+
+### `Field12`
+
+`Fp12` represented directly as `Fp[x]/(x¹² − 18x⁶ + 82)` — the standard BN254 `FQ12` modulus
+polynomial (as used by e.g. `py_ecc`) — rather than as the `Fp2`/`Fp6`/`Fp12` tower above.
+Elements are stored as 6 `Field2` pairs (`.v`); full multiplication and inversion unpack to the
+12 flat base-field coefficients to do the polynomial arithmetic (convolution + reduction for
+multiply, extended Euclidean algorithm for inverse), then repack.
+
+- `new Field12(bn, k)` — `bn` is any `{p, n}` curve-parameter pair (`Parameters` from this
+  package works directly); `k` is a `bigint` (embeds a scalar), an array of 6 `Field2`
+  (the raw `.v`), or omitted-shape fallback. `new Field12(other)` (single `Field12` argument)
+  clones `other`.
+- `.zero()` / `.one()` — identity checks.
+- `.eq(o)` — component-wise equality; `false` for non-`Field12` values.
+- `.add(k)` / `.subtract(k)` — field arithmetic against another `Field12` (same `bn.p`).
+- `.multiply(k)` / `.divide(k)` — accept another `Field12`, or a raw `bigint`/`Field2` scalar
+  applied component-wise.
+- `.neg()` / `.inverse()` — shorthand arithmetic.
+- `.mulV()` / `.divV()` — multiply/divide by `x`, the extension's formal generator; exact
+  inverses of one another.
+- `.exp(k)` — modular exponentiation by `k` (`bigint` or coercible).
+- `.finExp()` — raises to `(bn.p¹² − 1) / bn.n`, the pairing final-exponentiation power.
+- `.split()` / `.join(flat)` — convert to/from the flat 12-coefficient representation; mostly
+  an internal detail of `multiply`/`inverse`, exposed for advanced use.
+- `.toString()` — lists all 6 components' `re`/`im` values.
 
 ### BigInt extensions
 
