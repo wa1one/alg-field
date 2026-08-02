@@ -1,11 +1,12 @@
 {
-  "name": "alg-field",
-  "version": "0.1.4",
+  "name": "@wa1one/alg-field",
+  "version": "0.1.5",
   "description": "Algebraic fields",
   "main": "dist/index.js",
   "scripts": {
     "test": "jest all.test.js",
-    "build": "webpack --mode production"
+    "build": "webpack --mode production",
+    "lint": "eslint src all.test.js"
   },
   "repository": {
     "type": "git",
@@ -18,11 +19,15 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@babel/core": "^7.12.1",
     "@babel/plugin-proposal-class-properties": "^7.12.1",
     "@babel/preset-env": "^7.12.1",
     "babel-loader": "^8.1.0",
+    "eslint": "^8.57.1",
     "jest": "^26.5.3",
     "regenerator-runtime": "^0.13.7",
     "webpack": "^5.0.0",
@@ -33,6 +38,5 @@
   "bugs": {
     "url": "https://github.com/wa1one/alg-field/issues"
   },
-  "homepage": "https://github.com/wa1one/alg-field#readme",
-  "dependencies": {}
+  "homepage": "https://github.com/wa1one/alg-field#readme"
 }

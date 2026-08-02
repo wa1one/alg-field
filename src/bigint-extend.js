@@ -31,7 +31,7 @@ BigInt.prototype.modInv = function (p) {
   const egcd = eGcd(this.toZn(p), p);
   if (egcd.g !== 1n) {
     throw new RangeError(
-      `${a.toString()} does not have inverse modulo ${p.toString()}`
+      `${this.toString()} does not have inverse modulo ${p.toString()}`,
     );
   }
   return egcd.x.toZn(p);

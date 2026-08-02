@@ -28,22 +28,22 @@ class Field {
     }
   }
 
-  add = (o) => new Field((this.v + o.v).mod(this.p));
+  add = (o) => new Field((this.v + o.v).mod(this.p), this.p);
 
   multiply = (o) =>
     o instanceof Fp2
       ? new Fp2(o.a.multiply(this), o.b.multiply(this))
-      : new Field((this.v * o.v).mod(this.p));
+      : new Field((this.v * o.v).mod(this.p), this.p);
 
-  subtract = (o) => new Field((this.v - o.v).mod(this.p));
+  subtract = (o) => new Field((this.v - o.v).mod(this.p), this.p);
 
-  square = () => new Field((this.v * this.v).mod(this.p));
+  square = () => new Field((this.v * this.v).mod(this.p), this.p);
 
-  double = () => new Field((this.v + this.v).mod(this.p));
-  inverse = () => new Field(this.v.modInv(this.p));
+  double = () => new Field((this.v + this.v).mod(this.p), this.p);
+  inverse = () => new Field(this.v.modInv(this.p), this.p);
 
-  divide = (o) => new Field((this.v * o.inverse().v).mod(this.p));
-  negate = () => new Field(-this.v % this.p);
+  divide = (o) => new Field((this.v * o.inverse().v).mod(this.p), this.p);
+  negate = () => new Field((-this.v).mod(this.p), this.p);
 
   isZero = () => this.v === 0n;
 
@@ -148,7 +148,7 @@ class Fp2 {
   isZero = () => this.eq(Fp2._0);
 
   eq(o) {
-    if (!o instanceof Fp2) return false;
+    if (!(o instanceof Fp2)) return false;
 
     if (this.a != null ? !this.a.eq(o.a) : o.a != null) return false;
     return !(this.b != null ? !this.b.eq(o.b) : o.b != null);
@@ -165,7 +165,7 @@ class Fp2 {
 
   exp(k) {
     let w = this;
-    if (!typeof k === "bigint") {
+    if (typeof k !== "bigint") {
       k = BigInt(k);
     }
     const st = k.bitLength() - 2;
@@ -313,7 +313,7 @@ class Fp6 {
 
   negate = () => new Fp6(this.a.negate(), this.b.negate(), this.c.negate());
 
-  isZero = () => this.eq(this.ZERO);
+  isZero = () => this.eq(Fp6._0);
 
   frobeniusMap(power) {
     const ra = this.a.frobeniusMap(power);
@@ -339,7 +339,7 @@ class Fp6 {
 
   exp(k) {
     let w = this;
-    if (!typeof k === "bigint") {
+    if (typeof k !== "bigint") {
       k = BigInt(k);
     }
 
@@ -462,7 +462,7 @@ class Fp12 {
   }
 
   double() {
-    return null;
+    return this.add(this);
   }
 
   mulBy024(ell0, ellVW, ellVV) {
@@ -567,7 +567,7 @@ class Fp12 {
     return new Fp12(this.a.multiply(t3), this.b.multiply(t3).negate());
   }
 
-  negate = () => new Fp12(a.negate(), b.negate());
+  negate = () => new Fp12(this.a.negate(), this.b.negate());
 
   isZero = () => this.eq(Fp12._0);
 
@@ -679,6 +679,9 @@ class Fp12 {
   toString = () => "[" + this.a.toString() + " " + this.b.toString() + "]";
 }
 
+/* eslint-disable no-undef, no-const-assign -- Field2/Field12 are an unfinished port from another
+   BigInteger-style library (bigInt.isInstance, compareTo, shiftLeft, etc.) and are non-functional
+   as shipped; left disabled here pending a real rewrite rather than papered over line by line. */
 class Field2 {
   constructor(p, re, im, reduce) {
     this.poly_coeffs = [1, 0];
@@ -1327,5 +1330,6 @@ class Field12 {
     this.v[5].im.toString() +
     "]";
 }
+/* eslint-enable no-undef, no-const-assign */
 
 module.exports = { Field, Fp2, Fp6, Fp12, Field2, Field12, Parameters };

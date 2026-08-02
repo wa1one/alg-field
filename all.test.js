@@ -1,5 +1,9 @@
 const { Field, Fp2, Fp6, Fp12, Parameters } = require("./src");
 
+// Field2/Field12 are an unfinished port of a different BigInteger-style API
+// (see the eslint-disable block around them in src/index.js) and throw on any
+// call as shipped. They're intentionally left untested until rewritten.
+
 describe("Fields", function () {
   test("Field without extensions test", function () {
     const _2 = new Field(2n);
@@ -76,5 +80,312 @@ describe("Fields", function () {
     expect(
       one.multiply(f).add(x.multiply(f)).eq(one.add(x).multiply(f))
     ).toBeTruthy();
+  });
+});
+
+describe("BigInt extensions", function () {
+  test("modInv computes the modular inverse", function () {
+    expect(3n.modInv(11n)).toEqual(4n); // 3 * 4 = 12 = 1 (mod 11)
+    expect(10n.modInv(17n)).toEqual(12n); // 10 * 12 = 120 = 1 (mod 17)
+  });
+
+  test("modInv throws when no inverse exists", function () {
+    expect(() => 4n.modInv(8n)).toThrow(RangeError);
+  });
+
+  test("toZn reduces into the range [0, p)", function () {
+    expect(15n.toZn(7n)).toEqual(1n);
+    expect((-1n).toZn(7n)).toEqual(6n);
+  });
+
+  test("bitLength returns the bit length of a positive value", function () {
+    expect(1n.bitLength()).toEqual(1);
+    expect(2n.bitLength()).toEqual(2);
+    expect(255n.bitLength()).toEqual(8);
+    expect(256n.bitLength()).toEqual(9);
+  });
+
+  test("mod normalizes negative values into a non-negative range", function () {
+    expect((-1n).mod(7n)).toEqual(6n);
+    expect(10n.mod(7n)).toEqual(3n);
+  });
+
+  test("testBit reads individual bits", function () {
+    const v = 0b1010n;
+    expect(v.testBit(0)).toBe(false);
+    expect(v.testBit(1)).toBe(true);
+    expect(v.testBit(2)).toBe(false);
+    expect(v.testBit(3)).toBe(true);
+  });
+});
+
+describe("Field", function () {
+  const p = 13n;
+
+  test("constructor coerces non-bigint input and defaults the modulus", function () {
+    const f = new Field(5);
+    expect(f.v).toEqual(5n);
+    expect(f.p).toEqual(Parameters.p);
+
+    const g = new Field(5n, 13);
+    expect(g.p).toEqual(13n);
+  });
+
+  test("add/subtract/multiply/square/double reduce modulo p", function () {
+    const a = new Field(9n, p);
+    const b = new Field(8n, p);
+
+    expect(a.add(b).v).toEqual(4n); // 17 mod 13
+    expect(a.subtract(b).v).toEqual(1n);
+    expect(b.subtract(a).v).toEqual(12n); // -1 mod 13
+    expect(a.multiply(b).v).toEqual(7n); // 72 mod 13
+    expect(a.square().v).toEqual(3n); // 81 mod 13
+    expect(a.double().v).toEqual(5n); // 18 mod 13
+  });
+
+  test("multiply with an Fp2 operand scales both of its components", function () {
+    const scaled = new Field(2n).multiply(new Fp2(3n, 4n));
+    expect(scaled.eq(new Fp2(6n, 8n))).toBeTruthy();
+  });
+
+  test("negate is the additive inverse", function () {
+    const a = new Field(9n, p);
+    expect(a.add(a.negate()).v.mod(p)).toEqual(0n);
+  });
+
+  test("inverse is the multiplicative inverse", function () {
+    const a = new Field(9n, p);
+    expect(a.multiply(a.inverse()).eq(new Field(1n, p))).toBeTruthy();
+  });
+
+  test("divide matches multiplying by the inverse", function () {
+    const a = new Field(9n, p);
+    const b = new Field(8n, p);
+    expect(a.divide(b).eq(a.multiply(b.inverse()))).toBeTruthy();
+  });
+
+  test("isZero and eq", function () {
+    expect(new Field(0n, p).isZero()).toBeTruthy();
+    expect(new Field(1n, p).isZero()).toBeFalsy();
+    expect(new Field(5n, p).eq(new Field(5n, p))).toBeTruthy();
+    expect(new Field(5n, p).eq(new Field(6n, p))).toBeFalsy();
+  });
+
+  test("exp matches repeated multiplication and Fermat's little theorem", function () {
+    const a = new Field(9n, p);
+    expect(a.exp(p - 1n).eq(new Field(1n, p))).toBeTruthy();
+    expect(a.exp(3n).eq(a.multiply(a).multiply(a))).toBeTruthy();
+  });
+
+  test("bytes returns the little-endian byte array of the value", function () {
+    expect(new Field(9n).bytes()).toEqual([9]);
+    expect(new Field(258n).bytes()).toEqual([2, 1]); // 258 = 2 + 1*256
+  });
+
+  test("toString", function () {
+    expect(new Field(9n).toString()).toEqual("9");
+  });
+});
+
+describe("Fp2", function () {
+  const f = new Fp2(1n, 2n);
+
+  test("constructor wraps raw values in Field and passes through Field instances", function () {
+    const wrapped = new Fp2(1n, 2n);
+    expect(wrapped.a instanceof Field).toBeTruthy();
+    expect(wrapped.b instanceof Field).toBeTruthy();
+
+    const passthrough = new Fp2(new Field(1n), new Field(2n));
+    expect(passthrough.eq(wrapped)).toBeTruthy();
+  });
+
+  test("multiplicative and additive identities", function () {
+    expect(f.multiply(Fp2._1).eq(f)).toBeTruthy();
+    expect(f.add(Fp2._0).eq(f)).toBeTruthy();
+  });
+
+  test("square matches self-multiplication", function () {
+    expect(f.square().eq(f.multiply(f))).toBeTruthy();
+  });
+
+  test("double matches self-addition", function () {
+    expect(f.double().eq(f.add(f))).toBeTruthy();
+  });
+
+  test("negate is the additive inverse", function () {
+    expect(f.add(f.negate()).eq(Fp2._0)).toBeTruthy();
+  });
+
+  test("inverse is the multiplicative inverse", function () {
+    expect(f.multiply(f.inverse()).eq(Fp2._1)).toBeTruthy();
+  });
+
+  test("isZero", function () {
+    expect(Fp2._0.isZero()).toBeTruthy();
+    expect(Fp2._1.isZero()).toBeFalsy();
+  });
+
+  test("eq rejects non-Fp2 values instead of throwing", function () {
+    expect(f.eq({})).toBeFalsy();
+    expect(f.eq(null)).toBeFalsy();
+  });
+
+  test("frobeniusMap at index 0 is the identity", function () {
+    expect(f.frobeniusMap(0n).eq(f)).toBeTruthy();
+    expect(f.frobeniusMap(2n).eq(f)).toBeTruthy();
+  });
+
+  test("frobeniusMap applied twice returns the original value", function () {
+    expect(f.frobeniusMap(1n).frobeniusMap(1n).eq(f)).toBeTruthy();
+  });
+
+  test("mulByNonResidue matches multiplying by NON_RESIDUE", function () {
+    expect(f.mulByNonResidue().eq(Fp2.NON_RESIDUE.multiply(f))).toBeTruthy();
+  });
+
+  test("exp accepts non-bigint exponents", function () {
+    expect(f.exp(3).eq(f.multiply(f).multiply(f))).toBeTruthy();
+  });
+
+  test("toString", function () {
+    expect(f.toString()).toEqual("1, 2");
+  });
+});
+
+describe("Fp6", function () {
+  const f = new Fp6(new Fp2(1n, 2n), new Fp2(3n, 4n), new Fp2(5n, 6n));
+
+  test("multiplicative and additive identities", function () {
+    expect(f.multiply(Fp6._1).eq(f)).toBeTruthy();
+    expect(f.add(Fp6._0).eq(f)).toBeTruthy();
+  });
+
+  test("multiply with an Fp2 operand scales every component", function () {
+    const scaled = f.multiply(Fp2._1);
+    expect(scaled.eq(f)).toBeTruthy();
+  });
+
+  test("square matches self-multiplication", function () {
+    expect(f.square().eq(f.multiply(f))).toBeTruthy();
+  });
+
+  test("double matches self-addition", function () {
+    expect(f.double().eq(f.add(f))).toBeTruthy();
+  });
+
+  test("negate is the additive inverse", function () {
+    expect(f.add(f.negate()).eq(Fp6._0)).toBeTruthy();
+  });
+
+  test("inverse is the multiplicative inverse", function () {
+    expect(f.multiply(f.inverse()).eq(Fp6._1)).toBeTruthy();
+  });
+
+  test("mulByNonResidue is consistent with multiply by NON_RESIDUE", function () {
+    const viaHelper = f.mulByNonResidue();
+    const viaMultiply = new Fp6(Fp2._0, Fp2._1, Fp2._0).multiply(f);
+    expect(viaHelper.eq(viaMultiply)).toBeTruthy();
+  });
+
+  test("isZero", function () {
+    expect(Fp6._0.isZero()).toBeTruthy();
+    expect(Fp6._1.isZero()).toBeFalsy();
+    expect(f.isZero()).toBeFalsy();
+  });
+
+  test("eq rejects non-Fp6 values instead of throwing", function () {
+    expect(f.eq({})).toBeFalsy();
+    expect(f.eq(null)).toBeFalsy();
+  });
+
+  test("frobeniusMap at index 0 is the identity", function () {
+    expect(f.frobeniusMap(0n).eq(f)).toBeTruthy();
+    expect(f.frobeniusMap(6n).eq(f)).toBeTruthy();
+  });
+
+  test("divide matches multiplying by the inverse", function () {
+    const other = Fp6._1.add(Fp6._1);
+    expect(f.divide(other).eq(f.multiply(other.inverse()))).toBeTruthy();
+  });
+
+  test("exp accepts non-bigint exponents", function () {
+    expect(f.exp(3).eq(f.multiply(f).multiply(f))).toBeTruthy();
+  });
+
+  test("toString", function () {
+    expect(f.toString()).toEqual("[1, 2, 3, 4, 5, 6]");
+  });
+});
+
+describe("Fp12", function () {
+  const f = new Fp12(
+    new Fp6(new Fp2(1n, 2n), new Fp2(3n, 4n), new Fp2(5n, 6n)),
+    new Fp6(new Fp2(7n, 8n), new Fp2(9n, 10n), new Fp2(11n, 12n))
+  );
+  const one = Fp12._1;
+
+  test("multiplicative and additive identities", function () {
+    expect(f.multiply(one).eq(f)).toBeTruthy();
+    expect(f.add(Fp12._0).eq(f)).toBeTruthy();
+  });
+
+  test("square matches self-multiplication", function () {
+    expect(f.square().eq(f.multiply(f))).toBeTruthy();
+  });
+
+  test("double matches self-addition", function () {
+    expect(f.double().eq(f.add(f))).toBeTruthy();
+  });
+
+  test("negate is the additive inverse", function () {
+    expect(f.add(f.negate()).eq(Fp12._0)).toBeTruthy();
+  });
+
+  test("inverse is the multiplicative inverse", function () {
+    expect(f.multiply(f.inverse()).eq(one)).toBeTruthy();
+  });
+
+  test("isZero", function () {
+    expect(Fp12._0.isZero()).toBeTruthy();
+    expect(one.isZero()).toBeFalsy();
+  });
+
+  test("eq handles self-reference and non-Fp12 values", function () {
+    expect(f.eq(f)).toBeTruthy();
+    expect(f.eq({})).toBeFalsy();
+  });
+
+  test("frobeniusMap at index 0 is the identity", function () {
+    expect(f.frobeniusMap(0n).eq(f)).toBeTruthy();
+    expect(f.frobeniusMap(12n).eq(f)).toBeTruthy();
+  });
+
+  test("mulBy024 matches dense multiplication by the equivalent sparse element", function () {
+    const ell0 = new Fp2(3n, 1n);
+    const ellVW = new Fp2(5n, 2n);
+    const ellVV = new Fp2(7n, 4n);
+    const sparse = new Fp12(
+      new Fp6(ell0, Fp2._0, ellVV),
+      new Fp6(Fp2._0, ellVW, Fp2._0)
+    );
+
+    expect(f.mulBy024(ell0, ellVW, ellVV).eq(f.multiply(sparse))).toBeTruthy();
+  });
+
+  test("cyclotomicSquared and cyclotomicExp fix the identity element", function () {
+    expect(one.cyclotomicSquared().eq(one)).toBeTruthy();
+    expect(one.cyclotomicExp(5n).eq(one)).toBeTruthy();
+  });
+
+  test("unitaryInverse is an involution", function () {
+    expect(f.unitaryInverse().unitaryInverse().eq(f)).toBeTruthy();
+  });
+
+  test("negExp of zero is the identity", function () {
+    expect(one.negExp(0n).eq(one)).toBeTruthy();
+  });
+
+  test("toString", function () {
+    expect(f.toString()).toEqual("[[1, 2, 3, 4, 5, 6] [7, 8, 9, 10, 11, 12]]");
   });
 });
