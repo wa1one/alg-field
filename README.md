@@ -6,16 +6,16 @@ alt_bn128 (BN254) curve parameters used by Ethereum precompiles.
 ## Install
 
 ```
-npm install @wa1one/alg-field
+npm install alg-field
 ```
 
-- **Current (scoped) package:** https://www.npmjs.com/package/@wa1one/alg-field
-- **Legacy package** (`alg-field`, unscoped, no longer maintained under this account): https://www.npmjs.com/package/alg-field
+- **Package:** https://www.npmjs.com/package/alg-field
+- **Scoped mirror:** https://www.npmjs.com/package/@wa1one/alg-field
 
 ## Usage
 
 ```js
-const { Field, Fp2, Fp6, Fp12, Parameters } = require("@wa1one/alg-field");
+const { Field, Fp2, Fp6, Fp12, Parameters } = require("alg-field");
 
 const a = new Field(9n);
 const b = new Field(2n);
