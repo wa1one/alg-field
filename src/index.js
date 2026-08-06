@@ -1,6 +1,7 @@
 require("./bigint-extend");
 
 const Parameters = require("./parameters");
+const Bls12381Parameters = require("./bls12-381-parameters");
 
 // Curve-specific constants (non-residues, Frobenius coefficient tables) are derived from a
 // modulus at load time rather than hardcoded, so the tower below works for any prime - not
@@ -1170,6 +1171,7 @@ module.exports = {
   Field2,
   Field12,
   Parameters,
+  Bls12381Parameters,
   deriveFp2Params,
   deriveFp6Params,
   deriveFp12Params,

@@ -6,6 +6,7 @@ const {
   Field2,
   Field12,
   Parameters,
+  Bls12381Parameters,
   deriveFp2Params,
   deriveFp6Params,
   deriveFp12Params,
@@ -653,5 +654,74 @@ describe("using Field with secp256k1", function () {
     // sqrt(a) = a^((p+1)/4) whenever a is a quadratic residue (as y^2 always is here).
     const candidate = rhs.exp((p + 1n) / 4n);
     expect(candidate.eq(Gy) || candidate.negate().eq(Gy)).toBeTruthy();
+  });
+});
+
+// BLS12-381 (used by Ethereum's consensus layer, Zcash Sapling, and most modern BLS
+// signature schemes) is, unlike secp256k1, a pairing-friendly curve of the same embedding-
+// degree-12 shape as BN254 - so the Fp2/Fp6/Fp12 tower applies directly via Bls12381Parameters
+// and the derive*Params helpers, the same way as the generic tunable-curve tests above.
+describe("using the tower with BLS12-381 parameters", function () {
+  const p = Bls12381Parameters.p;
+  const n = Bls12381Parameters.n;
+
+  test("matches the published BLS12-381 constants", function () {
+    expect(p.toString()).toEqual(
+      "4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787"
+    );
+    expect(n.toString()).toEqual(
+      "52435875175126190479447740508185965837690552500527637822603658699938581184513"
+    );
+    expect(p % 4n).toEqual(3n); // required by this tower's u^2 = -1 convention for Fp2
+  });
+
+  test("derived non-residues match BLS12-381's actual published convention", function () {
+    // Confirms this isn't just *a* valid tower, but the same one used by real BLS12-381
+    // implementations: Fp2's non-residue is -1, and Fp6's is exactly 1 + u.
+    const fp2Params = deriveFp2Params(p);
+    const fp6Params = deriveFp6Params(fp2Params);
+
+    expect(fp2Params.nonResidue.eq(new Field(p - 1n, p))).toBeTruthy();
+    expect(fp6Params.nonResidue.eq(new Fp2(1n, 1n, fp2Params))).toBeTruthy();
+  });
+
+  test("Fp2 built on BLS12-381 satisfies field axioms", function () {
+    const fp2Params = deriveFp2Params(p);
+    const a = new Fp2(3n, 5n, fp2Params);
+    const b = new Fp2(7n, 2n, fp2Params);
+
+    expect(a.multiply(Fp2.one(fp2Params)).eq(a)).toBeTruthy();
+    expect(a.multiply(a.inverse()).eq(Fp2.one(fp2Params))).toBeTruthy();
+    expect(
+      a.multiply(b.add(a)).eq(a.multiply(b).add(a.multiply(a)))
+    ).toBeTruthy();
+  });
+
+  test("Fp6 built on BLS12-381 satisfies field axioms", function () {
+    const fp2Params = deriveFp2Params(p);
+    const fp6Params = deriveFp6Params(fp2Params);
+    const a2 = new Fp2(3n, 5n, fp2Params);
+    const b2 = new Fp2(7n, 2n, fp2Params);
+    const f = new Fp6(a2, b2, a2, fp6Params);
+
+    expect(f.multiply(Fp6.one(fp6Params)).eq(f)).toBeTruthy();
+    expect(f.multiply(f.inverse()).eq(Fp6.one(fp6Params))).toBeTruthy();
+    expect(f.frobeniusMap(0n).eq(f)).toBeTruthy();
+  });
+
+  test("Fp12 built on BLS12-381 satisfies field axioms", function () {
+    const fp2Params = deriveFp2Params(p);
+    const fp6Params = deriveFp6Params(fp2Params);
+    const fp12Params = deriveFp12Params(fp6Params);
+    const a2 = new Fp2(3n, 5n, fp2Params);
+    const b2 = new Fp2(7n, 2n, fp2Params);
+    const a6 = new Fp6(a2, b2, a2, fp6Params);
+    const b6 = new Fp6(b2, a2, b2, fp6Params);
+    const f = new Fp12(a6, b6, fp12Params);
+
+    expect(f.multiply(Fp12.one(fp12Params)).eq(f)).toBeTruthy();
+    expect(f.multiply(f.inverse()).eq(Fp12.one(fp12Params))).toBeTruthy();
+    expect(f.square().eq(f.multiply(f))).toBeTruthy();
+    expect(f.frobeniusMap(0n).eq(f)).toBeTruthy();
   });
 });

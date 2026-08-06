@@ -1,0 +1,10 @@
+// BLS12-381 curve parameters, used by Ethereum's consensus layer, Zcash Sapling, and most
+// modern BLS signature schemes. p = (x-1)^2 * (x^4-x^2+1)/3 + x, n = x^4-x^2+1, for the BLS12
+// seed x = -0xd201000000010000.
+
+class Bls12381Parameters {
+  static p = 4002409555221667393417789825735904156556882819939007885332058136124031650490837864442687629129015664037894272559787n;
+  static n = 52435875175126190479447740508185965837690552500527637822603658699938581184513n;
+}
+
+module.exports = Bls12381Parameters;

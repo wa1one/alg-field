@@ -30,10 +30,18 @@ a.multiply(b).eq(new Field(18n)); // true
 
 ### `Parameters`
 
-Static holder for the default field modulus and curve order.
+Static holder for the default field modulus and curve order (BN254/alt_bn128).
 
 - `Parameters.p` — the field modulus (`bigint`).
 - `Parameters.n` — the curve order (`bigint`).
+
+### `Bls12381Parameters`
+
+Same shape as `Parameters`, but for BLS12-381 — see
+[Using with BLS12-381](#using-with-bls12-381).
+
+- `Bls12381Parameters.p` — the field modulus (`bigint`).
+- `Bls12381Parameters.n` — the curve order (`bigint`).
 
 ### `Field`
 
@@ -187,6 +195,41 @@ const one = Fp12.one(fp12Params);
 Every method on `Fp2`/`Fp6`/`Fp12` that returns a new instance carries `this.params` forward
 automatically, so a tower built this way stays self-consistent through chained calls without
 needing to pass `params` at every step.
+
+### Using with BLS12-381
+
+BLS12-381 (used by Ethereum's consensus layer, Zcash Sapling, and most modern BLS signature
+schemes) is, like BN254, a pairing-friendly curve with embedding degree 12 — its `Fp2`/`Fp6`/
+`Fp12` tower is the same shape this library already builds, just over a different (381-bit)
+prime. `Bls12381Parameters` ships as a ready-made `{p, n}` pair, so building the tower is the
+same three calls as [any other tunable prime](#tunable-curve-parameters):
+
+```js
+const {
+  Fp2,
+  Fp6,
+  Fp12,
+  Bls12381Parameters,
+  deriveFp2Params,
+  deriveFp6Params,
+  deriveFp12Params,
+} = require("alg-field");
+
+const fp2Params = deriveFp2Params(Bls12381Parameters.p);
+const fp6Params = deriveFp6Params(fp2Params);
+const fp12Params = deriveFp12Params(fp6Params);
+
+const a = new Fp2(3n, 5n, fp2Params);
+const one = Fp12.one(fp12Params);
+```
+
+The derived non-residues aren't just *some* valid choice — they match BLS12-381's actual
+published convention exactly (`Fp2`'s is `-1`, `Fp6`'s is `1 + u`), confirmed in the test suite.
+
+`Field12` (the direct `Fp[x]/(x¹²−18x⁶+82)` polynomial representation) is **not** covered by
+this — that modulus polynomial is BN254-specific, and BLS12-381 would need a different one
+that this library doesn't ship (see the note on `bn.modulusCoeffs` in `Field12`'s docs above).
+The `Fp2`/`Fp6`/`Fp12` tower above doesn't have this limitation.
 
 ### Using with secp256k1
 
