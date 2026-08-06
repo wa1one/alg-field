@@ -617,3 +617,41 @@ describe("tunable curve parameters", function () {
     expect(Field.NON_RESIDUE.p).toEqual(Parameters.p);
   });
 });
+
+// secp256k1 (Bitcoin/Ethereum signing) is y^2 = x^3 + 7 over Fp with p = 2^256 - 2^32 - 977.
+// It is NOT a pairing-friendly curve (its embedding degree is astronomically large), so only
+// the base field (Field) is relevant - there's no Fp2/Fp6/Fp12 tower to build for it.
+describe("using Field with secp256k1", function () {
+  const p = 2n ** 256n - 2n ** 32n - 977n;
+
+  // the standard secp256k1 generator point G
+  const Gx = new Field(
+    55066263022277343669578718895168534326250603453777594175500187360389116729240n,
+    p
+  );
+  const Gy = new Field(
+    32670510020758816978083085130507043184471273380659243275938904335757337482424n,
+    p
+  );
+
+  test("secp256k1's prime satisfies p = 3 (mod 4)", function () {
+    expect(p % 4n).toEqual(3n);
+  });
+
+  test("field arithmetic works under secp256k1's modulus", function () {
+    const a = new Field(9n, p);
+    const b = new Field(2n, p);
+    expect(a.multiply(a.inverse()).eq(new Field(1n, p))).toBeTruthy();
+    expect(a.add(b).p).toEqual(p);
+  });
+
+  test("recovers G's y-coordinate from its x-coordinate (point decompression)", function () {
+    const rhs = Gx.multiply(Gx).multiply(Gx).add(new Field(7n, p)); // x^3 + 7
+    expect(rhs.eq(Gy.multiply(Gy))).toBeTruthy();
+
+    // Field has no dedicated sqrt(), but p = 3 (mod 4) makes it a one-liner via .exp():
+    // sqrt(a) = a^((p+1)/4) whenever a is a quadratic residue (as y^2 always is here).
+    const candidate = rhs.exp((p + 1n) / 4n);
+    expect(candidate.eq(Gy) || candidate.negate().eq(Gy)).toBeTruthy();
+  });
+});

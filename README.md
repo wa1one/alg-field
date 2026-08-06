@@ -188,6 +188,32 @@ Every method on `Fp2`/`Fp6`/`Fp12` that returns a new instance carries `this.par
 automatically, so a tower built this way stays self-consistent through chained calls without
 needing to pass `params` at every step.
 
+### Using with secp256k1
+
+secp256k1 (the curve behind Bitcoin/Ethereum signing) is **not** pairing-friendly — its
+embedding degree is astronomically large, so there's no `Fp2`/`Fp6`/`Fp12` tower to build for
+it. Only the base field (`Field`) is relevant; just pass its prime as the modulus:
+
+```js
+const { Field } = require("alg-field");
+
+const p = 2n ** 256n - 2n ** 32n - 977n; // secp256k1's field modulus
+
+const a = new Field(9n, p);
+const b = new Field(2n, p);
+a.multiply(a.inverse()).eq(new Field(1n, p)); // true
+```
+
+`Field` has no dedicated `.sqrt()`, but secp256k1's `p ≡ 3 (mod 4)` (like BN254's) makes
+modular square root a one-liner via the existing `.exp()` — useful for decompressing a point
+from just its x-coordinate (`y² = x³ + 7`):
+
+```js
+const rhs = x.multiply(x).multiply(x).add(new Field(7n, p)); // x^3 + 7
+const y = rhs.exp((p + 1n) / 4n); // sqrt(rhs), since rhs is a quadratic residue
+// the other root is y.negate() - pick whichever matches the compressed point's parity byte
+```
+
 ### `Field2`
 
 An independent `Fp2 = Fp[i]/(i² + 1)` implementation (`i² = -1`), separate from the `Fp2` tower
