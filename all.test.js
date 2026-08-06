@@ -725,3 +725,35 @@ describe("using the tower with BLS12-381 parameters", function () {
     expect(f.frobeniusMap(0n).eq(f)).toBeTruthy();
   });
 });
+
+describe("Hardcoded BN254 default tower constants", function () {
+  test(
+    "default Fp6/Fp12 params match the generic derivation exactly",
+    function () {
+      const d2 = deriveFp2Params(Parameters.p);
+      const d6 = deriveFp6Params(d2);
+      const d12 = deriveFp12Params(d6);
+
+      expect(Fp2.defaultParams.nonResidue.eq(d2.nonResidue)).toBeTruthy();
+      d2.frobeniusCoeffsB.forEach((c, i) =>
+        expect(Fp2.defaultParams.frobeniusCoeffsB[i].eq(c)).toBeTruthy()
+      );
+
+      expect(Fp6.defaultParams.nonResidue.eq(d6.nonResidue)).toBeTruthy();
+      d6.frobeniusCoeffsB.forEach((c, i) =>
+        expect(Fp6.defaultParams.frobeniusCoeffsB[i].eq(c)).toBeTruthy()
+      );
+      d6.frobeniusCoeffsC.forEach((c, i) =>
+        expect(Fp6.defaultParams.frobeniusCoeffsC[i].eq(c)).toBeTruthy()
+      );
+
+      d12.frobeniusCoeffsB.forEach((c, i) =>
+        expect(Fp12.defaultParams.frobeniusCoeffsB[i].eq(c)).toBeTruthy()
+      );
+
+      // the historical alias also points at the Fp6-level non-residue
+      expect(Fp2.NON_RESIDUE.eq(d6.nonResidue)).toBeTruthy();
+    },
+    60000
+  );
+});

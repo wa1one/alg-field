@@ -2,11 +2,16 @@ require("./bigint-extend");
 
 const Parameters = require("./parameters");
 const Bls12381Parameters = require("./bls12-381-parameters");
+const BN254_TOWER = require("./bn254-tower-constants");
 
-// Curve-specific constants (non-residues, Frobenius coefficient tables) are derived from a
-// modulus at load time rather than hardcoded, so the tower below works for any prime - not
-// just Parameters.p. These two helpers work on raw BigInt (no Field dependency yet) to avoid
-// a circular reference from Field's own static initializers.
+// Curve-specific constants (non-residues, Frobenius coefficient tables) can be derived from
+// any modulus via the derive* helpers below, so the tower works for any prime - not just
+// Parameters.p. The default (BN254) parameters, however, are built from the precomputed
+// constants in bn254-tower-constants.js: the generic derivation brute-forces the sextic
+// non-residue and exponentiates for every Frobenius coefficient, which costs close to a
+// second at import time. A unit test re-runs the derivation and asserts it still matches
+// the hardcoded constants. These two helpers work on raw BigInt (no Field dependency yet)
+// to avoid a circular reference from Field's own static initializers.
 function modPow(base, exp, p) {
   base = base.mod(p);
   let result = 1n;
@@ -255,8 +260,20 @@ function deriveFp6Params(fp2Params, nonResidueOverride) {
   return { p, nonResidue, frobeniusCoeffsB, frobeniusCoeffsC };
 }
 
+// Builds the default (BN254) Fp6 parameters from the precomputed constants - identical in
+// every value to deriveFp6Params(Fp2.defaultParams), without the import-time derivation cost.
+function bn254Fp6Params() {
+  const fp2 = (pair) => new Fp2(pair[0], pair[1], Fp2.defaultParams);
+  return {
+    p: Parameters.p,
+    nonResidue: fp2(BN254_TOWER.fp6NonResidue),
+    frobeniusCoeffsB: BN254_TOWER.fp6FrobeniusCoeffsB.map(fp2),
+    frobeniusCoeffsC: BN254_TOWER.fp6FrobeniusCoeffsC.map(fp2),
+  };
+}
+
 class Fp6 {
-  static defaultParams = deriveFp6Params(Fp2.defaultParams);
+  static defaultParams = bn254Fp6Params();
 
   static one = (params = Fp6.defaultParams) => {
     const fp2Params = params.nonResidue.params;
@@ -461,8 +478,19 @@ function deriveFp12Params(fp6Params) {
   return { p, frobeniusCoeffsB, fp6Params };
 }
 
+// Builds the default (BN254) Fp12 parameters from the precomputed constants - identical in
+// every value to deriveFp12Params(Fp6.defaultParams), without the import-time derivation cost.
+function bn254Fp12Params() {
+  const fp2 = (pair) => new Fp2(pair[0], pair[1], Fp2.defaultParams);
+  return {
+    p: Parameters.p,
+    frobeniusCoeffsB: BN254_TOWER.fp12FrobeniusCoeffsB.map(fp2),
+    fp6Params: Fp6.defaultParams,
+  };
+}
+
 class Fp12 {
-  static defaultParams = deriveFp12Params(Fp6.defaultParams);
+  static defaultParams = bn254Fp12Params();
 
   static one = (params = Fp12.defaultParams) =>
     new Fp12(Fp6.one(params.fp6Params), Fp6.zero(params.fp6Params), params);
