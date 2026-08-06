@@ -20,7 +20,7 @@ module.exports = [
 
           options: {
             presets: [
-              "@babel/preset-env",
+              ["@babel/preset-env", { targets: { esmodules: true } }],
               {
                 plugins: ["@babel/plugin-proposal-class-properties"],
               },
@@ -50,7 +50,7 @@ module.exports = [
 
           options: {
             presets: [
-              "@babel/preset-env",
+              ["@babel/preset-env", { targets: { esmodules: true } }],
               {
                 plugins: ["@babel/plugin-proposal-class-properties"],
               },
