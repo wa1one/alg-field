@@ -3,6 +3,10 @@
 Algebraic fields (`Fp`, `Fp2`, `Fp6`, `Fp12`) over a configurable prime, defaulting to the
 alt_bn128 (BN254) curve parameters used by Ethereum precompiles.
 
+Every curve-specific constant (non-residues, Frobenius coefficient tables) is derived at
+runtime from the modulus rather than hardcoded, so the tower works for any prime `p ≡ 3 (mod
+4)` — not just BN254's. See [Tunable curve parameters](#tunable-curve-parameters).
+
 ## Install
 
 ```
@@ -36,8 +40,11 @@ Static holder for the default field modulus and curve order.
 Base prime field element, `v mod p`.
 
 - `new Field(v, p?)` — `v` is coerced to `bigint` if needed; `p` defaults to `Parameters.p`.
+  `Field` itself needs no other curve parameters — non-residues/Frobenius tables only come in
+  at the `Fp2` level and above.
 - `static _0`, `static _1` — the additive and multiplicative identities.
-- `static NON_RESIDUE` — the quadratic non-residue used to build `Fp2`.
+- `static NON_RESIDUE` — the quadratic non-residue used to build `Fp2` for `Parameters.p`
+  (derived at load time via `findQuadraticNonResidue`, not hardcoded).
 - `static _2_INV` — the inverse of `2` mod `Parameters.p`.
 - `.add(o)` / `.subtract(o)` / `.multiply(o)` / `.divide(o)` — field arithmetic against another `Field`. `.multiply(o)` also accepts an `Fp2`, scaling both of its components and returning an `Fp2`.
 - `.square()` / `.double()` / `.negate()` — shorthand arithmetic.
@@ -50,17 +57,28 @@ Base prime field element, `v mod p`.
 
 ### `Fp2`
 
-Quadratic extension field, `a + b·u` where `u² = Field.NON_RESIDUE`.
+Quadratic extension field, `a + b·u` where `u²` is this instance's own non-residue (its
+`params.nonResidue`).
 
-- `new Fp2(a, b)` — `a`/`b` may be `Field` instances or raw values (wrapped with the default modulus).
-- `static _0`, `static _1` — the additive and multiplicative identities.
-- `static NON_RESIDUE` — the non-residue used to build `Fp6`.
-- `static FROBENIUS_COEFFS_B` — Frobenius coefficient table, indexed by `power % 2`.
+- `new Fp2(a, b, params?)` — `a`/`b` may be `Field` instances or raw values (wrapped with
+  `params.p`). `params` defaults to `Fp2.defaultParams` (BN254); build your own with
+  [`deriveFp2Params`](#tunable-curve-parameters) for a different modulus. Every method that
+  returns a new `Fp2` (`add`, `multiply`, `frobeniusMap`, ...) carries the same `params`
+  forward, so a tower built on a custom prime stays self-consistent through chained calls.
+- `static one(params?)` / `static zero(params?)` — the multiplicative/additive identity for a
+  given `params` (defaults to `Fp2.defaultParams`).
+- `static _0`, `static _1` — shorthand for `Fp2.zero()`/`Fp2.one()` with the default params.
+- `static NON_RESIDUE` — **the `Fp6`-level non-residue** (`9 + u` for BN254), not this class's
+  own `u²`; kept under this name only for backward compatibility with `.mulByNonResidue()`
+  below. For an instance's own construction non-residue use `instance.params.nonResidue`.
+- `static FROBENIUS_COEFFS_B` — the default (BN254) Frobenius coefficient table, indexed by
+  `power % 2`; a custom-params instance uses `instance.params.frobeniusCoeffsB` instead.
 - `.add(o)` / `.subtract(o)` / `.multiply(o)` / `.divide(o)` — field arithmetic against another `Fp2`.
 - `.square()` / `.double()` / `.negate()` — shorthand arithmetic.
 - `.inverse()` — the multiplicative inverse.
-- `.mulByNonResidue()` — multiplies by `Fp2.NON_RESIDUE`.
-- `.frobeniusMap(power)` — applies the Frobenius endomorphism coefficient at `power % 2`.
+- `.mulByNonResidue()` — multiplies by the default `Fp6`-level non-residue (`Fp2.NON_RESIDUE`);
+  a fixed BN254 convenience, not itself tunable — see `Fp6`'s own methods for the tunable path.
+- `.frobeniusMap(power)` — applies this instance's own Frobenius coefficient at `power % 2`.
 - `.exp(k)` — modular exponentiation by `k` (`bigint` or coercible).
 - `.isZero()` — `true` if both components are `0`.
 - `.eq(o)` — component-wise equality; `false` for non-`Fp2` values.
@@ -68,18 +86,27 @@ Quadratic extension field, `a + b·u` where `u² = Field.NON_RESIDUE`.
 
 ### `Fp6`
 
-Cubic extension of `Fp2`, `a + b·v + c·v²`.
+Cubic extension of `Fp2`, `a + b·v + c·v²` where `v³` is this instance's own non-residue.
 
-- `new Fp6(a, b, c)` — `a`/`b`/`c` are `Fp2` instances.
-- `static _0`, `static _1` — the additive and multiplicative identities.
-- `static NON_RESIDUE` — the non-residue used to build `Fp12`.
-- `static FROBENIUS_COEFFS_B`, `static FROBENIUS_COEFFS_C` — Frobenius coefficient tables, indexed by `power % 6`.
+- `new Fp6(a, b, c, params?)` — `a`/`b`/`c` are `Fp2` instances (built with matching `Fp2`
+  params). `params` defaults to `Fp6.defaultParams` (BN254); build your own with
+  [`deriveFp6Params`](#tunable-curve-parameters). Carried forward automatically through every
+  method that returns a new `Fp6`.
+- `static one(params?)` / `static zero(params?)` — the multiplicative/additive identity for a
+  given `params` (defaults to `Fp6.defaultParams`).
+- `static _0`, `static _1` — shorthand for `Fp6.zero()`/`Fp6.one()` with the default params.
+- `static NON_RESIDUE` — the default (BN254) non-residue used to build `Fp12`; a custom-params
+  instance uses `instance.params.nonResidue` instead (used internally by all of `Fp6`'s own
+  methods, so a custom-curve `Fp6` behaves correctly without touching this static).
+- `static FROBENIUS_COEFFS_B`, `static FROBENIUS_COEFFS_C` — the default Frobenius coefficient
+  tables, indexed by `power % 6`; a custom-params instance uses `instance.params.frobeniusCoeffsB`/`frobeniusCoeffsC`.
 - `.add(o)` / `.subtract(o)` / `.divide(o)` — field arithmetic against another `Fp6`.
 - `.multiply(o)` — accepts another `Fp6`, or an `Fp2` scalar that's applied component-wise.
 - `.square()` / `.double()` / `.negate()` — shorthand arithmetic.
 - `.inverse()` — the multiplicative inverse.
-- `.mulByNonResidue()` — multiplies by `Fp6.NON_RESIDUE` (rotates components).
-- `.frobeniusMap(power)` — applies the Frobenius endomorphism at `power % 6`.
+- `.mulByNonResidue()` — multiplies by this instance's own non-residue (rotates components);
+  tunable, unlike `Fp2`'s same-named method.
+- `.frobeniusMap(power)` — applies this instance's own Frobenius coefficients at `power % 6`.
 - `.exp(k)` — modular exponentiation by `k` (`bigint` or coercible).
 - `.isZero()` — `true` if all three components are `0`.
 - `.eq(o)` — component-wise equality; `false` for non-`Fp6` values.
@@ -89,9 +116,16 @@ Cubic extension of `Fp2`, `a + b·v + c·v²`.
 
 Quadratic extension of `Fp6`, `a + b·w`. Used as the pairing target group.
 
-- `new Fp12(a, b)` — `a`/`b` are `Fp6` instances.
-- `static _0`, `static _1` — the additive and multiplicative identities.
-- `static FROBENIUS_COEFFS_B` — Frobenius coefficient table, indexed by `power % 12`.
+- `new Fp12(a, b, params?)` — `a`/`b` are `Fp6` instances (built with matching `Fp6` params).
+  `params` defaults to `Fp12.defaultParams` (BN254); build your own with
+  [`deriveFp12Params`](#tunable-curve-parameters). `Fp12` reuses `a`/`b`'s own `Fp6`
+  non-residue internally (via their `.mulByNonResidue()`/`.params`), so it needs no
+  non-residue of its own.
+- `static one(params?)` / `static zero(params?)` — the multiplicative/additive identity for a
+  given `params` (defaults to `Fp12.defaultParams`).
+- `static _0`, `static _1` — shorthand for `Fp12.zero()`/`Fp12.one()` with the default params.
+- `static FROBENIUS_COEFFS_B` — the default Frobenius coefficient table, indexed by
+  `power % 12`; a custom-params instance uses `instance.params.frobeniusCoeffsB`.
 - `.add(o)` / `.subtract(o)` / `.divide(o)` / `.multiply(o)` — field arithmetic against another `Fp12`.
 - `.square()` / `.double()` / `.negate()` — shorthand arithmetic.
 - `.inverse()` — the multiplicative inverse.
@@ -104,6 +138,55 @@ Quadratic extension of `Fp6`, `a + b·w`. Used as the pairing target group.
 - `.isZero()` — `true` if both components are `0`.
 - `.eq(o)` — component-wise equality; `true` for `this === o`, `false` for non-`Fp12` values.
 - `.toString()` — `"[[a] [b]]"`.
+
+## Tunable curve parameters
+
+`Field`, `Fp2`, `Fp6`, and `Fp12` all default to BN254 (`Parameters.p`), but every non-residue
+and Frobenius coefficient table above is derived at runtime from the modulus, not hardcoded —
+so the same classes work for any prime `p ≡ 3 (mod 4)` (required so `-1` has no square root in
+`Fp`, matching this tower's `u² = -1` convention for `Fp2`).
+
+```js
+const {
+  Field,
+  Fp2,
+  Fp6,
+  Fp12,
+  deriveFp2Params,
+  deriveFp6Params,
+  deriveFp12Params,
+} = require("alg-field");
+
+const p = 10007n; // any prime with p % 4n === 3n
+
+const fp2Params = deriveFp2Params(p);
+const fp6Params = deriveFp6Params(fp2Params);
+const fp12Params = deriveFp12Params(fp6Params);
+
+const a = new Fp2(3n, 5n, fp2Params);
+const b = new Fp2(7n, 2n, fp2Params);
+a.multiply(b).eq(b.multiply(a)); // true, on the p = 10007 curve
+
+const one = Fp12.one(fp12Params);
+```
+
+- `deriveFp2Params(p, nonResidueOverride?)` — returns `{ p, nonResidue, frobeniusCoeffsB }`.
+  Picks `-1` as the non-residue when `p ≡ 3 (mod 4)` (always, given the constraint above),
+  otherwise searches upward from `2`; pass a `Field` as `nonResidueOverride` to pick one
+  yourself instead.
+- `deriveFp6Params(fp2Params, nonResidueOverride?)` — returns
+  `{ p, nonResidue, frobeniusCoeffsB, frobeniusCoeffsC }`. Searches `Fp2` elements (in
+  `(re, im)` order) for the first that's neither a square nor a cube; pass an `Fp2` as
+  `nonResidueOverride` to pick one yourself. For `Parameters.p` this reproduces the canonical
+  `9 + u` exactly.
+- `deriveFp12Params(fp6Params)` — returns `{ p, frobeniusCoeffsB, fp6Params }`.
+- `findQuadraticNonResidue(p)` / `findSexticNonResidue(fp2Params)` — the underlying non-residue
+  search, exposed in case you want to pick a non-residue via a different strategy than
+  `deriveFp2Params`/`deriveFp6Params`'s defaults.
+
+Every method on `Fp2`/`Fp6`/`Fp12` that returns a new instance carries `this.params` forward
+automatically, so a tower built this way stays self-consistent through chained calls without
+needing to pass `params` at every step.
 
 ### `Field2`
 
@@ -139,7 +222,11 @@ multiply, extended Euclidean algorithm for inverse), then repack.
 - `new Field12(bn, k)` — `bn` is any `{p, n}` curve-parameter pair (`Parameters` from this
   package works directly); `k` is a `bigint` (embeds a scalar), an array of 6 `Field2`
   (the raw `.v`), or omitted-shape fallback. `new Field12(other)` (single `Field12` argument)
-  clones `other`.
+  clones `other`. `bn` may also carry an optional `modulusCoeffs` (12 `bigint`s, low-to-high
+  degree) to use a different degree-12 modulus polynomial in place of the default BN254 one —
+  unlike the rest of this library's curve parameters, this one isn't auto-derivable (finding
+  an irreducible degree-12 polynomial for an arbitrary prime is genuine computational algebra),
+  so you have to supply it yourself if you need a non-default one.
 - `.zero()` / `.one()` — identity checks.
 - `.eq(o)` — component-wise equality; `false` for non-`Field12` values.
 - `.add(k)` / `.subtract(k)` — field arithmetic against another `Field12` (same `bn.p`).

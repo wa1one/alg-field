@@ -2,16 +2,34 @@ require("./bigint-extend");
 
 const Parameters = require("./parameters");
 
+// Curve-specific constants (non-residues, Frobenius coefficient tables) are derived from a
+// modulus at load time rather than hardcoded, so the tower below works for any prime - not
+// just Parameters.p. These two helpers work on raw BigInt (no Field dependency yet) to avoid
+// a circular reference from Field's own static initializers.
+function modPow(base, exp, p) {
+  base = base.mod(p);
+  let result = 1n;
+  while (exp > 0n) {
+    if (exp & 1n) result = (result * base).mod(p);
+    base = (base * base).mod(p);
+    exp >>= 1n;
+  }
+  return result;
+}
+
+// -1 is a quadratic non-residue whenever p = 3 (mod 4); otherwise search upward from 2.
+function findQuadraticNonResidue(p) {
+  if (p % 4n === 3n) return (-1n).mod(p);
+  for (let k = 2n; ; k++) {
+    if (modPow(k, (p - 1n) / 2n, p) !== 1n) return k;
+  }
+}
+
 class Field {
   static _0 = new Field(0n);
   static _1 = new Field(1n);
-  static NON_RESIDUE = new Field(
-    21888242871839275222246405745257275088696311157297823662689037894645226208582n
-  );
-
-  static _2_INV = new Field(
-    10944121435919637611123202872628637544348155578648911831344518947322613104292n
-  );
+  static NON_RESIDUE = new Field(findQuadraticNonResidue(Parameters.p));
+  static _2_INV = new Field(2n.modInv(Parameters.p));
 
   constructor(v, p) {
     if (typeof v !== "bigint") {
@@ -32,7 +50,7 @@ class Field {
 
   multiply = (o) =>
     o instanceof Fp2
-      ? new Fp2(o.a.multiply(this), o.b.multiply(this))
+      ? new Fp2(o.a.multiply(this), o.b.multiply(this), o.params)
       : new Field((this.v * o.v).mod(this.p), this.p);
 
   subtract = (o) => new Field((this.v - o.v).mod(this.p), this.p);
@@ -79,22 +97,39 @@ class Field {
   toString = () => this.v.toString();
 }
 
+// Derives the Fp2 = Fp[u]/(u^2 - nonResidue) parameters for a given prime p: the non-residue
+// itself (a Field), and the Frobenius coefficient table indexed by power % 2 (coefficient[i] =
+// nonResidue^((p^i - 1)/2), with coefficient[0] = 1 by definition).
+function deriveFp2Params(p, nonResidueOverride) {
+  const nonResidue = nonResidueOverride ?? new Field(findQuadraticNonResidue(p), p);
+  const one = new Field(1n, p);
+  // Computed via the dependency-free modPow, not Field.exp()/multiply(): this runs while Fp2
+  // is still being defined (as Fp2.defaultParams), and Field.multiply() references Fp2 by
+  // name for its scalar-times-Fp2 branch, which would throw (TDZ) if reached from here.
+  const coeff1 = new Field(modPow(nonResidue.v, (p - 1n) / 2n, p), p);
+  return { p, nonResidue, frobeniusCoeffsB: [one, coeff1] };
+}
+
 class Fp2 {
-  static _0 = new Fp2(Field._0, Field._0);
-  static _1 = new Fp2(Field._1, Field._0);
+  static defaultParams = deriveFp2Params(Parameters.p);
 
-  static NON_RESIDUE = new Fp2(9, 1);
+  static one = (params = Fp2.defaultParams) =>
+    new Fp2(new Field(1n, params.p), new Field(0n, params.p), params);
 
-  static FROBENIUS_COEFFS_B = [
-    new Field(1),
-    new Field(
-      21888242871839275222246405745257275088696311157297823662689037894645226208582n
-    ),
-  ];
+  static zero = (params = Fp2.defaultParams) =>
+    new Fp2(new Field(0n, params.p), new Field(0n, params.p), params);
 
-  constructor(a, b) {
-    this.a = a instanceof Field ? a : new Field(a);
-    this.b = b instanceof Field ? b : new Field(b);
+  static _0 = Fp2.zero();
+  static _1 = Fp2.one();
+
+  // Fp2.NON_RESIDUE is set below, once Fp6 exists: it historically held the Fp6-level
+  // non-residue (9+u), not Fp2's own construction non-residue (-1) - see mulByNonResidue().
+  static FROBENIUS_COEFFS_B = Fp2.defaultParams.frobeniusCoeffsB;
+
+  constructor(a, b, params) {
+    this.params = params ?? Fp2.defaultParams;
+    this.a = a instanceof Field ? a : new Field(a, this.params.p);
+    this.b = b instanceof Field ? b : new Field(b, this.params.p);
   }
 
   square() {
@@ -102,20 +137,20 @@ class Fp2 {
     // ra = (a + b)(a + NON_RESIDUE * b) - ab - NON_RESIDUE * b
     const ra = this.a
       .add(this.b)
-      .multiply(this.b.multiply(Field.NON_RESIDUE).add(this.a))
+      .multiply(this.b.multiply(this.params.nonResidue).add(this.a))
       .subtract(ab)
-      .subtract(ab.multiply(Field.NON_RESIDUE));
+      .subtract(ab.multiply(this.params.nonResidue));
 
     const rb = ab.double();
 
-    return new Fp2(ra, rb);
+    return new Fp2(ra, rb, this.params);
   }
 
   multiply(o) {
     const aa = this.a.multiply(o.a);
     const bb = this.b.multiply(o.b);
     // ra = a1 * a2 + NON_RESIDUE * b1 * b2
-    const ra = bb.multiply(Field.NON_RESIDUE).add(aa);
+    const ra = bb.multiply(this.params.nonResidue).add(aa);
     // rb = (a1 + b1)(a2 + b2) - a1 * a2 - b1 * b2
     const rb = this.a
       .add(this.b)
@@ -123,29 +158,29 @@ class Fp2 {
       .subtract(aa)
       .subtract(bb);
 
-    return new Fp2(ra, rb);
+    return new Fp2(ra, rb, this.params);
   }
 
-  add = (o) => new Fp2(this.a.add(o.a), this.b.add(o.b));
-  subtract = (o) => new Fp2(this.a.subtract(o.a), this.b.subtract(o.b));
+  add = (o) => new Fp2(this.a.add(o.a), this.b.add(o.b), this.params);
+  subtract = (o) => new Fp2(this.a.subtract(o.a), this.b.subtract(o.b), this.params);
   double = () => this.add(this);
   divide = (o) => this.multiply(o.inverse());
 
   inverse() {
     const t0 = this.a.square();
     const t1 = this.b.square();
-    const t2 = t0.subtract(Field.NON_RESIDUE.multiply(t1));
+    const t2 = t0.subtract(this.params.nonResidue.multiply(t1));
     const t3 = t2.inverse();
 
     const ra = this.a.multiply(t3);
     const rb = this.b.multiply(t3).negate();
 
-    return new Fp2(ra, rb);
+    return new Fp2(ra, rb, this.params);
   }
 
-  negate = () => new Fp2(this.a.negate(), this.b.negate());
+  negate = () => new Fp2(this.a.negate(), this.b.negate(), this.params);
 
-  isZero = () => this.eq(Fp2._0);
+  isZero = () => this.a.isZero() && this.b.isZero();
 
   eq(o) {
     if (!(o instanceof Fp2)) return false;
@@ -156,11 +191,15 @@ class Fp2 {
 
   frobeniusMap(power) {
     const ra = this.a;
-    const rb = Fp2.FROBENIUS_COEFFS_B[power % 2n].multiply(this.b);
+    const rb = this.params.frobeniusCoeffsB[power % 2n].multiply(this.b);
 
-    return new Fp2(ra, rb);
+    return new Fp2(ra, rb, this.params);
   }
 
+  // Multiplies by the Fp6-level non-residue (Fp2.NON_RESIDUE), not this instance's own
+  // construction non-residue - kept for backward compatibility with the default BN254 tower.
+  // Fp6's own methods use their instance's params directly instead of this shortcut, so it
+  // works correctly for any curve; this convenience method only reflects the default one.
   mulByNonResidue = () => Fp2.NON_RESIDUE.multiply(this);
 
   exp(k) {
@@ -181,13 +220,62 @@ class Fp2 {
   toString = () => this.a.toString() + ", " + this.b.toString();
 }
 
+// Finds an Fp2 sextic non-residue (neither a square nor a cube in Fp2 - field size q = p^2):
+// a natural search over (re, im) with im=0,1,2,... outer and re=1,2,3,... inner, returning the
+// first candidate that satisfies both. For Parameters.p this reproduces exactly 9+u.
+function findSexticNonResidue(fp2Params) {
+  const q = fp2Params.p * fp2Params.p;
+  const one = new Fp2(1n, 0n, fp2Params);
+  for (let im = 0n; im < 50n; im++) {
+    for (let re = 1n; re < 50n; re++) {
+      const candidate = new Fp2(re, im, fp2Params);
+      const notSquare = !candidate.exp((q - 1n) / 2n).eq(one);
+      const notCube = !candidate.exp((q - 1n) / 3n).eq(one);
+      if (notSquare && notCube) return candidate;
+    }
+  }
+  throw new Error("could not find a sextic non-residue in Fp2");
+}
+
+// Derives the Fp6 = Fp2[v]/(v^3 - nonResidue) parameters: the non-residue (an Fp2), and the
+// Frobenius coefficient tables indexed by power % 6 (coefficientB[i] = nonResidue^((p^i-1)/3),
+// coefficientC[i] = nonResidue^((p^i-1)/3 * 2), both 1 at i = 0 by definition).
+function deriveFp6Params(fp2Params, nonResidueOverride) {
+  const p = fp2Params.p;
+  const nonResidue = nonResidueOverride ?? findSexticNonResidue(fp2Params);
+  const one = new Fp2(1n, 0n, fp2Params);
+  const frobeniusCoeffsB = [one];
+  const frobeniusCoeffsC = [one];
+  for (let i = 1; i < 6; i++) {
+    const pi = p ** BigInt(i);
+    frobeniusCoeffsB.push(nonResidue.exp((pi - 1n) / 3n));
+    frobeniusCoeffsC.push(nonResidue.exp(((pi - 1n) / 3n) * 2n));
+  }
+  return { p, nonResidue, frobeniusCoeffsB, frobeniusCoeffsC };
+}
+
 class Fp6 {
-  static _0 = new Fp6(Fp2._0, Fp2._0, Fp2._0);
-  static _1 = new Fp6(Fp2._1, Fp2._0, Fp2._0);
+  static defaultParams = deriveFp6Params(Fp2.defaultParams);
 
-  static NON_RESIDUE = new Fp2(9, 1);
+  static one = (params = Fp6.defaultParams) => {
+    const fp2Params = params.nonResidue.params;
+    return new Fp6(Fp2.one(fp2Params), Fp2.zero(fp2Params), Fp2.zero(fp2Params), params);
+  };
 
-  constructor(a, b, c) {
+  static zero = (params = Fp6.defaultParams) => {
+    const fp2Params = params.nonResidue.params;
+    return new Fp6(Fp2.zero(fp2Params), Fp2.zero(fp2Params), Fp2.zero(fp2Params), params);
+  };
+
+  static _0 = Fp6.zero();
+  static _1 = Fp6.one();
+
+  static NON_RESIDUE = Fp6.defaultParams.nonResidue;
+  static FROBENIUS_COEFFS_B = Fp6.defaultParams.frobeniusCoeffsB;
+  static FROBENIUS_COEFFS_C = Fp6.defaultParams.frobeniusCoeffsC;
+
+  constructor(a, b, c, params) {
+    this.params = params ?? Fp6.defaultParams;
     this.a = a;
     this.b = b;
     this.c = c;
@@ -211,11 +299,11 @@ class Fp6 {
     const s3 = bc.double();
     const s4 = this.c.square();
 
-    const ra = s0.add(s3.mulByNonResidue());
-    const rb = s1.add(s4.mulByNonResidue());
+    const ra = s0.add(this.params.nonResidue.multiply(s3));
+    const rb = s1.add(this.params.nonResidue.multiply(s4));
     const rc = s1.add(s2).add(s3).subtract(s0).subtract(s4);
 
-    return new Fp6(ra, rb, rc);
+    return new Fp6(ra, rb, rc, this.params);
   }
 
   double = () => this.add(this);
@@ -234,19 +322,16 @@ class Fp6 {
       const c1c2 = c1.multiply(c2);
 
       const ra = a1a2.add(
-        b1
-          .add(c1)
-          .multiply(b2.add(c2))
-          .subtract(b1b2)
-          .subtract(c1c2)
-          .mulByNonResidue()
+        this.params.nonResidue.multiply(
+          b1.add(c1).multiply(b2.add(c2)).subtract(b1b2).subtract(c1c2)
+        )
       );
       const rb = a1
         .add(b1)
         .multiply(a2.add(b2))
         .subtract(a1a2)
         .subtract(b1b2)
-        .add(c1c2.mulByNonResidue());
+        .add(this.params.nonResidue.multiply(c1c2));
       const rc = a1
         .add(c1)
         .multiply(a2.add(c2))
@@ -254,23 +339,23 @@ class Fp6 {
         .add(b1b2)
         .subtract(c1c2);
 
-      return new Fp6(ra, rb, rc);
+      return new Fp6(ra, rb, rc, this.params);
     }
     if (o instanceof Fp2) {
       const ra = this.a.multiply(o);
       const rb = this.b.multiply(o);
       const rc = this.c.multiply(o);
 
-      return new Fp6(ra, rb, rc);
+      return new Fp6(ra, rb, rc, this.params);
     }
   }
 
   mulByNonResidue() {
-    const ra = Fp6.NON_RESIDUE.multiply(this.c);
+    const ra = this.params.nonResidue.multiply(this.c);
     const rb = this.a;
     const rc = this.b;
 
-    return new Fp6(ra, rb, rc);
+    return new Fp6(ra, rb, rc, this.params);
   }
 
   add(o) {
@@ -278,7 +363,7 @@ class Fp6 {
     const rb = this.b.add(o.b);
     const rc = this.c.add(o.c);
 
-    return new Fp6(ra, rb, rc);
+    return new Fp6(ra, rb, rc, this.params);
   }
 
   subtract(o) {
@@ -286,7 +371,7 @@ class Fp6 {
     const rb = this.b.subtract(o.b);
     const rc = this.c.subtract(o.c);
 
-    return new Fp6(ra, rb, rc);
+    return new Fp6(ra, rb, rc, this.params);
   }
 
   inverse() {
@@ -296,35 +381,40 @@ class Fp6 {
     const t3 = this.a.multiply(this.b);
     const t4 = this.a.multiply(this.c);
     const t5 = this.b.multiply(this.c);
-    const c0 = t0.subtract(t5.mulByNonResidue());
-    const c1 = t2.mulByNonResidue().subtract(t3);
+    const c0 = t0.subtract(this.params.nonResidue.multiply(t5));
+    const c1 = this.params.nonResidue.multiply(t2).subtract(t3);
     const c2 = t1.subtract(t4);
     const t6 = this.a
       .multiply(c0)
-      .add(this.c.multiply(c1).add(this.b.multiply(c2)).mulByNonResidue())
+      .add(
+        this.params.nonResidue.multiply(
+          this.c.multiply(c1).add(this.b.multiply(c2))
+        )
+      )
       .inverse();
 
     const ra = t6.multiply(c0);
     const rb = t6.multiply(c1);
     const rc = t6.multiply(c2);
 
-    return new Fp6(ra, rb, rc);
+    return new Fp6(ra, rb, rc, this.params);
   }
 
-  negate = () => new Fp6(this.a.negate(), this.b.negate(), this.c.negate());
+  negate = () =>
+    new Fp6(this.a.negate(), this.b.negate(), this.c.negate(), this.params);
 
-  isZero = () => this.eq(Fp6._0);
+  isZero = () => this.a.isZero() && this.b.isZero() && this.c.isZero();
 
   frobeniusMap(power) {
     const ra = this.a.frobeniusMap(power);
-    const rb = Fp6.FROBENIUS_COEFFS_B[power % 6n].multiply(
+    const rb = this.params.frobeniusCoeffsB[power % 6n].multiply(
       this.b.frobeniusMap(power)
     );
-    const rc = Fp6.FROBENIUS_COEFFS_C[power % 6n].multiply(
+    const rc = this.params.frobeniusCoeffsC[power % 6n].multiply(
       this.c.frobeniusMap(power)
     );
 
-    return new Fp6(ra, rb, rc);
+    return new Fp6(ra, rb, rc, this.params);
   }
 
   eq(fp6) {
@@ -351,99 +441,41 @@ class Fp6 {
     }
     return w;
   }
+}
 
-  static FROBENIUS_COEFFS_B = [
-    Fp2._1,
-    new Fp2(
-      21575463638280843010398324269430826099269044274347216827212613867836435027261n,
-      10307601595873709700152284273816112264069230130616436755625194854815875713954n
-    ),
-    new Fp2(
-      21888242871839275220042445260109153167277707414472061641714758635765020556616n,
-      0
-    ),
-    new Fp2(
-      3772000881919853776433695186713858239009073593817195771773381919316419345261n,
-      2236595495967245188281701248203181795121068902605861227855261137820944008926n
-    ),
-    new Fp2(2203960485148121921418603742825762020974279258880205651966n, 0),
-    new Fp2(
-      18429021223477853657660792034369865839114504446431234726392080002137598044644n,
-      9344045779998320333812420223237981029506012124075525679208581902008406485703n
-    ),
-  ];
+// See the comment on Fp2.prototype.mulByNonResidue: this alias historically held the Fp6-level
+// non-residue, not Fp2's own.
+Fp2.NON_RESIDUE = Fp6.defaultParams.nonResidue;
 
-  static FROBENIUS_COEFFS_C = [
-    Fp2._1,
-    new Fp2(
-      2581911344467009335267311115468803099551665605076196740867805258568234346338n,
-      19937756971775647987995932169929341994314640652964949448313374472400716661030n
-    ),
-    new Fp2(2203960485148121921418603742825762020974279258880205651966n, 0),
-    new Fp2(
-      5324479202449903542726783395506214481928257762400643279780343368557297135718n,
-      16208900380737693084919495127334387981393726419856888799917914180988844123039n
-    ),
-    new Fp2(
-      21888242871839275220042445260109153167277707414472061641714758635765020556616n,
-      0
-    ),
-    new Fp2(
-      13981852324922362344252311234282257507216387789820983642040889267519694726527n,
-      7629828391165209371577384193250820201684255241773809077146787135900891633097n
-    ),
-  ];
+// Derives the Fp12 = Fp6[w]/(w^2 - fp6Params.nonResidue) Frobenius coefficient table, indexed
+// by power % 12 (coefficient[i] = fp6Params.nonResidue^((p^i-1)/6), 1 at i = 0 by definition).
+// Keeps a reference to fp6Params so Fp12.one()/zero() can rebuild a matching Fp6 identity.
+function deriveFp12Params(fp6Params) {
+  const p = fp6Params.p;
+  const frobeniusCoeffsB = [fp6Params.frobeniusCoeffsB[0]];
+  for (let i = 1; i < 12; i++) {
+    const pi = p ** BigInt(i);
+    frobeniusCoeffsB.push(fp6Params.nonResidue.exp((pi - 1n) / 6n));
+  }
+  return { p, frobeniusCoeffsB, fp6Params };
 }
 
 class Fp12 {
-  static _0 = new Fp12(Fp6._0, Fp6._0);
-  static _1 = new Fp12(Fp6._1, Fp6._0);
+  static defaultParams = deriveFp12Params(Fp6.defaultParams);
 
-  static FROBENIUS_COEFFS_B = [
-    new Fp2(1, 0),
-    new Fp2(
-      8376118865763821496583973867626364092589906065868298776909617916018768340080n,
-      16469823323077808223889137241176536799009286646108169935659301613961712198316n
-    ),
-    new Fp2(
-      21888242871839275220042445260109153167277707414472061641714758635765020556617n,
-      0n
-    ),
-    new Fp2(
-      11697423496358154304825782922584725312912383441159505038794027105778954184319n,
-      303847389135065887422783454877609941456349188919719272345083954437860409601n
-    ),
-    new Fp2(
-      21888242871839275220042445260109153167277707414472061641714758635765020556616n,
-      0
-    ),
-    new Fp2(
-      3321304630594332808241809054958361220322477375291206261884409189760185844239n,
+  static one = (params = Fp12.defaultParams) =>
+    new Fp12(Fp6.one(params.fp6Params), Fp6.zero(params.fp6Params), params);
 
-      5722266937896532885780051958958348231143373700109372999374820235121374419868n
-    ),
-    new Fp2(
-      21888242871839275222246405745257275088696311157297823662689037894645226208582n,
-      0
-    ),
-    new Fp2(
-      13512124006075453725662431877630910996106405091429524885779419978626457868503n,
-      5418419548761466998357268504080738289687024511189653727029736280683514010267n
-    ),
-    new Fp2(2203960485148121921418603742825762020974279258880205651966n, 0),
-    new Fp2(
-      10190819375481120917420622822672549775783927716138318623895010788866272024264n,
+  static zero = (params = Fp12.defaultParams) =>
+    new Fp12(Fp6.zero(params.fp6Params), Fp6.zero(params.fp6Params), params);
 
-      21584395482704209334823622290379665147239961968378104390343953940207365798982n
-    ),
-    new Fp2(2203960485148121921418603742825762020974279258880205651967n, 0),
-    new Fp2(
-      18566938241244942414004596690298913868373833782006617400804628704885040364344n,
-      16165975933942742336466353786298926857552937457188450663314217659523851788715n
-    ),
-  ];
+  static _0 = Fp12.zero();
+  static _1 = Fp12.one();
 
-  constructor(a, b) {
+  static FROBENIUS_COEFFS_B = Fp12.defaultParams.frobeniusCoeffsB;
+
+  constructor(a, b, params) {
+    this.params = params ?? Fp12.defaultParams;
     this.a = a;
     this.b = b;
   }
@@ -458,7 +490,7 @@ class Fp12 {
       .subtract(ab.mulByNonResidue());
     const rb = ab.add(ab);
 
-    return new Fp12(ra, rb);
+    return new Fp12(ra, rb, this.params);
   }
 
   double() {
@@ -466,6 +498,9 @@ class Fp12 {
   }
 
   mulBy024(ell0, ellVW, ellVV) {
+    const nonResidue = this.a.params.nonResidue;
+    const fp6Params = this.a.params;
+
     let z0 = this.a.a;
     let z1 = this.a.b;
     let z2 = this.a.c;
@@ -489,14 +524,14 @@ class Fp12 {
     // For z.a_.a_ = z0.
     let s1 = z1.multiply(x2);
     let t3 = s1.add(d4);
-    let t4 = Fp6.NON_RESIDUE.multiply(t3).add(d0);
+    let t4 = nonResidue.multiply(t3).add(d0);
     z0 = t4;
 
     // For z.a_.b_ = z1
     t3 = z5.multiply(x4);
     s1 = s1.add(t3);
     t3 = t3.add(d2);
-    t4 = Fp6.NON_RESIDUE.multiply(t3);
+    t4 = nonResidue.multiply(t3);
     t3 = z1.multiply(x0);
     s1 = s1.add(t3);
     t4 = t4.add(t3);
@@ -514,7 +549,7 @@ class Fp12 {
     z2 = t3;
     t1 = x2.add(x4);
     t3 = t0.multiply(t1).subtract(d2).subtract(d4);
-    t4 = Fp6.NON_RESIDUE.multiply(t3);
+    t4 = nonResidue.multiply(t3);
     t3 = z3.multiply(x0);
     s1 = s1.add(t3);
     t4 = t4.add(t3);
@@ -523,7 +558,7 @@ class Fp12 {
     // For z.b_.b_ = z4
     t3 = z5.multiply(x2);
     s1 = s1.add(t3);
-    t4 = Fp6.NON_RESIDUE.multiply(t3);
+    t4 = nonResidue.multiply(t3);
     t0 = x0.add(x4);
     t3 = t2.multiply(t0).subtract(d0).subtract(d4);
     t4 = t4.add(t3);
@@ -534,10 +569,14 @@ class Fp12 {
     t3 = s0.multiply(t0).subtract(s1);
     z5 = t3;
 
-    return new Fp12(new Fp6(z0, z1, z2), new Fp6(z3, z4, z5));
+    return new Fp12(
+      new Fp6(z0, z1, z2, fp6Params),
+      new Fp6(z3, z4, z5, fp6Params),
+      this.params
+    );
   }
 
-  add = (o) => new Fp12(this.a.add(o.a), this.b.add(o.b));
+  add = (o) => new Fp12(this.a.add(o.a), this.b.add(o.b), this.params);
 
   divide = (o) => this.multiply(o.inverse());
 
@@ -553,10 +592,10 @@ class Fp12 {
     const ra = a1a2.add(b1b2.mulByNonResidue());
     const rb = a1.add(b1).multiply(a2.add(b2)).subtract(a1a2).subtract(b1b2);
 
-    return new Fp12(ra, rb);
+    return new Fp12(ra, rb, this.params);
   }
 
-  subtract = (o) => new Fp12(this.a.subtract(o.a), this.b.subtract(o.b));
+  subtract = (o) => new Fp12(this.a.subtract(o.a), this.b.subtract(o.b), this.params);
 
   inverse() {
     const t0 = this.a.square();
@@ -564,23 +603,26 @@ class Fp12 {
     const t2 = t0.subtract(t1.mulByNonResidue());
     const t3 = t2.inverse();
 
-    return new Fp12(this.a.multiply(t3), this.b.multiply(t3).negate());
+    return new Fp12(this.a.multiply(t3), this.b.multiply(t3).negate(), this.params);
   }
 
-  negate = () => new Fp12(this.a.negate(), this.b.negate());
+  negate = () => new Fp12(this.a.negate(), this.b.negate(), this.params);
 
-  isZero = () => this.eq(Fp12._0);
+  isZero = () => this.a.isZero() && this.b.isZero();
 
   frobeniusMap(power) {
     const ra = this.a.frobeniusMap(power);
     const rb = this.b
       .frobeniusMap(power)
-      .multiply(Fp12.FROBENIUS_COEFFS_B[power % 12n]);
+      .multiply(this.params.frobeniusCoeffsB[power % 12n]);
 
-    return new Fp12(ra, rb);
+    return new Fp12(ra, rb, this.params);
   }
 
   cyclotomicSquared() {
+    const nonResidue = this.a.params.nonResidue;
+    const fp6Params = this.a.params;
+
     let z0 = this.a.a;
     let z4 = this.a.b;
     let z3 = this.a.c;
@@ -591,25 +633,25 @@ class Fp12 {
     let tmp = z0.multiply(z1);
     const t0 = z0
       .add(z1)
-      .multiply(z0.add(Fp6.NON_RESIDUE.multiply(z1)))
+      .multiply(z0.add(nonResidue.multiply(z1)))
       .subtract(tmp)
-      .subtract(Fp6.NON_RESIDUE.multiply(tmp));
+      .subtract(nonResidue.multiply(tmp));
     const t1 = tmp.add(tmp);
     // t2 + t3*y = (z2 + z3*y)^2 = b^2
     tmp = z2.multiply(z3);
     const t2 = z2
       .add(z3)
-      .multiply(z2.add(Fp6.NON_RESIDUE.multiply(z3)))
+      .multiply(z2.add(nonResidue.multiply(z3)))
       .subtract(tmp)
-      .subtract(Fp6.NON_RESIDUE.multiply(tmp));
+      .subtract(nonResidue.multiply(tmp));
     const t3 = tmp.add(tmp);
     // t4 + t5*y = (z4 + z5*y)^2 = c^2
     tmp = z4.multiply(z5);
     const t4 = z4
       .add(z5)
-      .multiply(z4.add(Fp6.NON_RESIDUE.multiply(z5)))
+      .multiply(z4.add(nonResidue.multiply(z5)))
       .subtract(tmp)
-      .subtract(Fp6.NON_RESIDUE.multiply(tmp));
+      .subtract(nonResidue.multiply(tmp));
     const t5 = tmp.add(tmp);
 
     // for A
@@ -626,7 +668,7 @@ class Fp12 {
     // for B
 
     // z2 = 3 * (xi * t5) + 2 * z2
-    tmp = Fp6.NON_RESIDUE.multiply(t5);
+    tmp = nonResidue.multiply(t5);
     z2 = tmp.add(z2);
     z2 = z2.add(z2);
     z2 = z2.add(tmp);
@@ -646,12 +688,16 @@ class Fp12 {
     z5 = z5.add(z5);
     z5 = z5.add(t3);
 
-    return new Fp12(new Fp6(z0, z4, z3), new Fp6(z2, z1, z5));
+    return new Fp12(
+      new Fp6(z0, z4, z3, fp6Params),
+      new Fp6(z2, z1, z5, fp6Params),
+      this.params
+    );
   }
 
   cyclotomicExp(pow) {
     if (typeof pow !== "bigint") pow = BigInt(pow);
-    let res = Fp12._1;
+    let res = Fp12.one(this.params);
 
     for (let i = pow.bitLength() - 1; i >= 0; i--) {
       res = res.cyclotomicSquared();
@@ -664,7 +710,7 @@ class Fp12 {
     return res;
   }
 
-  unitaryInverse = () => new Fp12(this.a, this.b.negate());
+  unitaryInverse = () => new Fp12(this.a, this.b.negate(), this.params);
 
   negExp = (exp) => this.cyclotomicExp(exp).unitaryInverse();
 
@@ -875,7 +921,12 @@ function fp2NthRoot(a, r) {
 // polynomial arithmetic, mirroring that reference implementation.
 //
 // `bn` is any {p, n} pair of curve parameters (Parameters from this package satisfies this
-// shape directly); `p` must be the same modulus used to build the Field2 coefficients.
+// shape directly); `p` must be the same modulus used to build the Field2 coefficients. `bn`
+// may also carry an optional `modulusCoeffs` (12 bigints, low-to-high degree, monic implied)
+// to use a different degree-12 modulus polynomial; unlike the Frobenius coefficients derived
+// automatically elsewhere in this file, finding an irreducible degree-12 polynomial for an
+// arbitrary prime is genuine computational algebra, not something this library derives for
+// you - omit it to keep the default BN254 polynomial below.
 const FIELD12_DEGREE = 12;
 const FIELD12_MODULUS_COEFFS = [82n, 0n, 0n, 0n, 0n, 0n, -18n, 0n, 0n, 0n, 0n, 0n];
 
@@ -900,7 +951,7 @@ function field12PolyRoundedDiv(a, b, p) {
   return o.slice(0, field12PolyDeg(o) + 1);
 }
 
-function field12PolyMultiply(a, b, p) {
+function field12PolyMultiply(a, b, p, modulusCoeffs = FIELD12_MODULUS_COEFFS) {
   const result = new Array(FIELD12_DEGREE * 2 - 1).fill(0n);
   for (let i = 0; i < FIELD12_DEGREE; i++) {
     for (let j = 0; j < FIELD12_DEGREE; j++) {
@@ -912,18 +963,18 @@ function field12PolyMultiply(a, b, p) {
     const top = result.pop();
     for (let i = 0; i < FIELD12_DEGREE; i++) {
       result[exp + i] = (
-        result[exp + i] - (top * FIELD12_MODULUS_COEFFS[i]).mod(p)
+        result[exp + i] - (top * modulusCoeffs[i]).mod(p)
       ).mod(p);
     }
   }
   return result;
 }
 
-function field12PolyInverse(aCoeffs, p) {
+function field12PolyInverse(aCoeffs, p, modulusCoeffs = FIELD12_MODULUS_COEFFS) {
   let lm = [1n, ...new Array(FIELD12_DEGREE).fill(0n)];
   let hm = new Array(FIELD12_DEGREE + 1).fill(0n);
   let low = [...aCoeffs, 0n];
-  let high = [...FIELD12_MODULUS_COEFFS, 1n];
+  let high = [...modulusCoeffs, 1n];
 
   while (field12PolyDeg(low) !== 0) {
     let r = field12PolyRoundedDiv(high, low, p);
@@ -1046,7 +1097,12 @@ class Field12 {
       if (k.one()) return this;
       if (this.zero() || k.zero()) return new Field12(this.bn, 0n);
 
-      const product = field12PolyMultiply(this.split(), k.split(), this.bn.p);
+      const product = field12PolyMultiply(
+        this.split(),
+        k.split(),
+        this.bn.p,
+        this.bn.modulusCoeffs
+      );
       return this.join(product);
     }
     throw new Error("Incorrect type argument");
@@ -1060,7 +1116,7 @@ class Field12 {
   divV = () => this.divide(this.join([0n, 1n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n]));
 
   inverse() {
-    const inv = field12PolyInverse(this.split(), this.bn.p);
+    const inv = field12PolyInverse(this.split(), this.bn.p, this.bn.modulusCoeffs);
     return this.join(inv);
   }
 
@@ -1106,4 +1162,17 @@ class Field12 {
     "]";
 }
 
-module.exports = { Field, Fp2, Fp6, Fp12, Field2, Field12, Parameters };
+module.exports = {
+  Field,
+  Fp2,
+  Fp6,
+  Fp12,
+  Field2,
+  Field12,
+  Parameters,
+  deriveFp2Params,
+  deriveFp6Params,
+  deriveFp12Params,
+  findQuadraticNonResidue,
+  findSexticNonResidue,
+};

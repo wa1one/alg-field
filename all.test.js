@@ -1,4 +1,15 @@
-const { Field, Fp2, Fp6, Fp12, Field2, Field12, Parameters } = require("./src");
+const {
+  Field,
+  Fp2,
+  Fp6,
+  Fp12,
+  Field2,
+  Field12,
+  Parameters,
+  deriveFp2Params,
+  deriveFp6Params,
+  deriveFp12Params,
+} = require("./src");
 
 describe("Fields", function () {
   test("Field without extensions test", function () {
@@ -532,5 +543,77 @@ describe("Field12", function () {
     expect(f.toString()).toEqual(
       "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]"
     );
+  });
+});
+
+// Field/Fp2/Fp6/Fp12's non-residues and Frobenius coefficient tables are derived at runtime
+// rather than hardcoded, so the whole tower works for a modulus other than Parameters.p. This
+// only needs p = 3 (mod 4) (so -1 has no square root in Fp, matching this tower's convention).
+describe("tunable curve parameters", function () {
+  const altP = 10007n; // a small prime, distinct from Parameters.p, with altP % 4n === 3n
+
+  test("altP is a valid modulus for this tower (sanity check on the test fixture)", function () {
+    expect(altP % 4n).toEqual(3n);
+  });
+
+  test("deriving params for a different prime produces a genuinely different curve", function () {
+    const fp2Params = deriveFp2Params(altP);
+    expect(fp2Params.p).toEqual(altP);
+    expect(fp2Params.nonResidue.eq(Field.NON_RESIDUE)).toBeFalsy();
+  });
+
+  test("Field arithmetic works under a custom modulus", function () {
+    const a = new Field(9n, altP);
+    const b = new Field(8n, altP);
+    expect(a.multiply(a.inverse()).eq(new Field(1n, altP))).toBeTruthy();
+    expect(a.add(b).p).toEqual(altP);
+  });
+
+  test("Fp2 built on altP satisfies field axioms", function () {
+    const fp2Params = deriveFp2Params(altP);
+    const a = new Fp2(3n, 5n, fp2Params);
+    const b = new Fp2(7n, 2n, fp2Params);
+
+    expect(a.multiply(Fp2.one(fp2Params)).eq(a)).toBeTruthy();
+    expect(a.multiply(a.inverse()).eq(Fp2.one(fp2Params))).toBeTruthy();
+    expect(
+      a.multiply(b.add(a)).eq(a.multiply(b).add(a.multiply(a)))
+    ).toBeTruthy();
+  });
+
+  test("Fp6 built on altP satisfies field axioms", function () {
+    const fp2Params = deriveFp2Params(altP);
+    const fp6Params = deriveFp6Params(fp2Params);
+    const a2 = new Fp2(3n, 5n, fp2Params);
+    const b2 = new Fp2(7n, 2n, fp2Params);
+    const f = new Fp6(a2, b2, a2, fp6Params);
+
+    expect(f.multiply(Fp6.one(fp6Params)).eq(f)).toBeTruthy();
+    expect(f.multiply(f.inverse()).eq(Fp6.one(fp6Params))).toBeTruthy();
+    expect(f.frobeniusMap(0n).eq(f)).toBeTruthy();
+  });
+
+  test("Fp12 built on altP satisfies field axioms", function () {
+    const fp2Params = deriveFp2Params(altP);
+    const fp6Params = deriveFp6Params(fp2Params);
+    const fp12Params = deriveFp12Params(fp6Params);
+    const a2 = new Fp2(3n, 5n, fp2Params);
+    const b2 = new Fp2(7n, 2n, fp2Params);
+    const a6 = new Fp6(a2, b2, a2, fp6Params);
+    const b6 = new Fp6(b2, a2, b2, fp6Params);
+    const f = new Fp12(a6, b6, fp12Params);
+
+    expect(f.multiply(Fp12.one(fp12Params)).eq(f)).toBeTruthy();
+    expect(f.multiply(f.inverse()).eq(Fp12.one(fp12Params))).toBeTruthy();
+    expect(f.square().eq(f.multiply(f))).toBeTruthy();
+    expect(f.frobeniusMap(0n).eq(f)).toBeTruthy();
+  });
+
+  test("default (Parameters.p) tower is unaffected by using an alternate curve elsewhere", function () {
+    // Guards against shared mutable state leaking between the default statics and a custom
+    // params object built for a different prime.
+    expect(Fp2._1.eq(Fp2.one())).toBeTruthy();
+    expect(Fp12._1.eq(Fp12.one())).toBeTruthy();
+    expect(Field.NON_RESIDUE.p).toEqual(Parameters.p);
   });
 });
