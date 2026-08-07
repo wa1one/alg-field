@@ -10,6 +10,10 @@ const {
   deriveFp2Params,
   deriveFp6Params,
   deriveFp12Params,
+  deriveField12ModulusCoeffs,
+  findQuadraticNonResidue,
+  findSexticNonResidue,
+  jacobiSymbol,
 } = require("./src");
 
 describe("Fields", function () {
@@ -756,4 +760,244 @@ describe("Hardcoded BN254 default tower constants", function () {
     },
     60000
   );
+});
+
+// The non-residue searches use number-theoretic shortcuts rather than testing each candidate
+// with a full modular exponentiation: a Jacobi symbol for quadratic residuosity, and the norm
+// map N(a + b*u) = a^2 - nr*b^2 to push the Fp2 square/cube tests down into the base field.
+describe("jacobiSymbol", function () {
+  const p = Parameters.p;
+
+  test("agrees with Euler's criterion on the default modulus", function () {
+    for (const a of [1n, 2n, 3n, 4n, 5n, 9n, 12345n, p - 1n]) {
+      const euler = new Field(a, p).exp((p - 1n) / 2n);
+      const expected = euler.v === 1n ? 1 : -1;
+      expect(jacobiSymbol(a, p)).toEqual(expected);
+    }
+  });
+
+  test("agrees with Euler's criterion on a small prime, exhaustively", function () {
+    const small = 10007n;
+    for (let a = 1n; a < small; a++) {
+      const euler = new Field(a, small).exp((small - 1n) / 2n);
+      expect(jacobiSymbol(a, small)).toEqual(euler.v === 1n ? 1 : -1);
+    }
+  });
+
+  test("is 0 when the modulus divides the argument", function () {
+    expect(jacobiSymbol(0n, p)).toEqual(0);
+    expect(jacobiSymbol(p, p)).toEqual(0);
+  });
+
+  test("perfect squares are always residues", function () {
+    for (const root of [2n, 7n, 123456789n]) {
+      expect(jacobiSymbol((root * root).mod(p), p)).toEqual(1);
+    }
+  });
+});
+
+describe("non-residue searches", function () {
+  test("findQuadraticNonResidue returns an actual non-residue", function () {
+    for (const p of [Parameters.p, Bls12381Parameters.p, 10007n, 13n, 17n]) {
+      const nr = findQuadraticNonResidue(p);
+      expect(jacobiSymbol(nr, p)).toEqual(-1);
+    }
+  });
+
+  test("findQuadraticNonResidue picks -1 when p = 3 (mod 4)", function () {
+    // p = 3 (mod 4) is exactly the condition that makes -1 a non-residue, so the search
+    // short-circuits instead of scanning upward from 2.
+    expect(Parameters.p % 4n).toEqual(3n);
+    expect(findQuadraticNonResidue(Parameters.p)).toEqual(Parameters.p - 1n);
+  });
+
+  test("findSexticNonResidue returns a value that is neither a square nor a cube", function () {
+    // Verified the slow, direct way: exponentiate in Fp2 by (q-1)/2 and (q-1)/3 and check
+    // neither lands on 1 - the definition the optimized search is a shortcut for.
+    for (const p of [Parameters.p, 10007n]) {
+      const fp2Params = deriveFp2Params(p);
+      const xi = findSexticNonResidue(fp2Params);
+      const q = p * p;
+      const one = new Fp2(1n, 0n, fp2Params);
+
+      expect(xi.exp((q - 1n) / 2n).eq(one)).toBeFalsy();
+      expect(xi.exp((q - 1n) / 3n).eq(one)).toBeFalsy();
+    }
+  });
+
+  test("reproduces each curve's canonical published non-residue", function () {
+    // Regression anchors: BN254 must stay 9+u and BLS12-381 must stay 1+u, the values real
+    // implementations of these curves use. A change here would silently break interop.
+    const bn254 = deriveFp2Params(Parameters.p);
+    expect(findSexticNonResidue(bn254).eq(new Fp2(9n, 1n, bn254))).toBeTruthy();
+
+    const bls = deriveFp2Params(Bls12381Parameters.p);
+    expect(findSexticNonResidue(bls).eq(new Fp2(1n, 1n, bls))).toBeTruthy();
+  });
+});
+
+// Field12's degree-12 modulus polynomial is derived from the tower's own sextic non-residue
+// rather than hardcoded, so Field12 works for any supported prime - not just BN254.
+describe("Field12 modulus polynomial derivation", function () {
+  function deriveFor(p) {
+    return deriveField12ModulusCoeffs(deriveFp6Params(deriveFp2Params(p)));
+  }
+
+  test("reproduces BN254's published x^12 - 18x^6 + 82", function () {
+    const p = Parameters.p;
+    const coeffs = deriveFor(p);
+    expect(coeffs[0]).toEqual(82n);
+    expect(coeffs[6]).toEqual((-18n).mod(p));
+    coeffs.forEach((c, i) => {
+      if (i !== 0 && i !== 6) expect(c).toEqual(0n);
+    });
+  });
+
+  test("gives BLS12-381 x^12 - 2x^6 + 2", function () {
+    const p = Bls12381Parameters.p;
+    const coeffs = deriveFor(p);
+    expect(coeffs[0]).toEqual(2n);
+    expect(coeffs[6]).toEqual((-2n).mod(p));
+  });
+
+  test("the derived polynomial actually vanishes on the tower generator", function () {
+    // w^6 = xi, so w must satisfy w^12 + c6*w^6 + c0 = 0. Checked in Fp2 arithmetic:
+    // substituting w^6 = xi gives xi^2 + c6*xi + c0, which must be zero.
+    for (const p of [Parameters.p, Bls12381Parameters.p, 10007n]) {
+      const fp2Params = deriveFp2Params(p);
+      const fp6Params = deriveFp6Params(fp2Params);
+      const xi = fp6Params.nonResidue;
+      const coeffs = deriveField12ModulusCoeffs(fp6Params);
+
+      const value = xi
+        .multiply(xi)
+        .add(xi.multiply(new Fp2(coeffs[6], 0n, fp2Params)))
+        .add(new Fp2(coeffs[0], 0n, fp2Params));
+
+      expect(value.isZero()).toBeTruthy();
+    }
+  });
+
+  test("Field12 satisfies field axioms on BLS12-381 with no hand-supplied coefficients", function () {
+    const bn = Bls12381Parameters;
+    const p = bn.p;
+    const one = new Field12(bn, 1n);
+    const build = (seed) => {
+      const v = [];
+      for (let i = 0; i < 6; i++) {
+        v.push(new Field2(p, seed + BigInt(i), seed + BigInt(i) * 7n + 1n, false));
+      }
+      return new Field12(bn, v);
+    };
+
+    const x = build(3n);
+    const y = build(11n);
+    const z = build(29n);
+
+    expect(x.multiply(one).eq(x)).toBeTruthy();
+    expect(x.multiply(x.inverse()).eq(one)).toBeTruthy();
+    expect(x.multiply(y).eq(y.multiply(x))).toBeTruthy();
+    expect(x.multiply(y.add(z)).eq(x.multiply(y).add(x.multiply(z)))).toBeTruthy();
+    expect(x.multiply(y).multiply(z).eq(x.multiply(y.multiply(z)))).toBeTruthy();
+    expect(x.mulV().divV().eq(x)).toBeTruthy();
+  });
+
+  test("an explicit bn.modulusCoeffs still overrides the derivation", function () {
+    const p = Parameters.p;
+    const explicit = { p, n: Parameters.n, modulusCoeffs: deriveFor(p) };
+    const build = (bn) =>
+      new Field12(bn, [
+        new Field2(p, 5n, 6n, false),
+        new Field2(p, 7n, 8n, false),
+        new Field2(p, 9n, 1n, false),
+        new Field2(p, 2n, 3n, false),
+        new Field2(p, 4n, 5n, false),
+        new Field2(p, 6n, 7n, false),
+      ]);
+
+    expect(build(explicit).multiply(build(explicit)).eq(build(Parameters).multiply(build(Parameters)))).toBeTruthy();
+  });
+});
+
+// Every level of the Fp/Fp2/Fp6/Fp12 tower accepts its own type, any level below it, and raw
+// bigint/number scalars; the result of mixing two levels lives at the higher of the two. This
+// generalizes what Field.multiply(someFp2) always did, in both directions.
+describe("mixed-level operand normalization", function () {
+  const k = new Field(3n);
+  const f2 = new Fp2(5n, 7n);
+  const f6 = new Fp6(new Fp2(1n, 2n), new Fp2(3n, 4n), new Fp2(5n, 6n));
+  const f12 = new Fp12(
+    f6,
+    new Fp6(new Fp2(7n, 8n), new Fp2(9n, 10n), new Fp2(11n, 12n))
+  );
+
+  test("Fp2 accepts a Field or raw scalar where it previously threw", function () {
+    const expected = new Fp2(15n, 21n);
+    expect(f2.multiply(k).eq(expected)).toBeTruthy();
+    expect(f2.multiply(3n).eq(expected)).toBeTruthy();
+    expect(f2.multiply(3).eq(expected)).toBeTruthy();
+  });
+
+  test("scalar fast paths agree with embedding the scalar and multiplying in full", function () {
+    // The shortcuts scale components directly; embedding as (k, 0, ...) and running the
+    // general formula has to give the same answer or one of the two is wrong.
+    expect(f2.multiply(3n).eq(f2.multiply(new Fp2(3n, 0n)))).toBeTruthy();
+
+    const embedded6 = new Fp6(new Fp2(3n, 0n), Fp2._0, Fp2._0);
+    expect(f6.multiply(3n).eq(f6.multiply(embedded6))).toBeTruthy();
+
+    const embedded12 = new Fp12(embedded6, Fp6._0);
+    expect(f12.multiply(3n).eq(f12.multiply(embedded12))).toBeTruthy();
+  });
+
+  test("multiplication commutes across levels", function () {
+    expect(k.multiply(f2).eq(f2.multiply(k))).toBeTruthy();
+    expect(k.multiply(f6).eq(f6.multiply(k))).toBeTruthy();
+    expect(k.multiply(f12).eq(f12.multiply(k))).toBeTruthy();
+    expect(f2.multiply(f6).eq(f6.multiply(f2))).toBeTruthy();
+    expect(f6.multiply(f12).eq(f12.multiply(f6))).toBeTruthy();
+  });
+
+  test("add/subtract/divide round-trip with lower-level operands", function () {
+    expect(f2.add(1n).subtract(1n).eq(f2)).toBeTruthy();
+    expect(f6.add(k).subtract(k).eq(f6)).toBeTruthy();
+    expect(f12.add(2n).subtract(2n).eq(f12)).toBeTruthy();
+    expect(f2.divide(k).multiply(k).eq(f2)).toBeTruthy();
+    expect(f6.divide(2n).multiply(2n).eq(f6)).toBeTruthy();
+    expect(f12.divide(3n).multiply(3n).eq(f12)).toBeTruthy();
+  });
+
+  test("a lower-level receiver lifts itself to the operand's level", function () {
+    // Subtraction does not commute, so this pins the orientation: k - f2 == -(f2 - k).
+    expect(k.subtract(f2).eq(f2.subtract(k).negate())).toBeTruthy();
+    expect(k.add(f6).eq(f6.add(k))).toBeTruthy();
+    expect(k.divide(f2).eq(f2.inverse().multiply(k))).toBeTruthy();
+  });
+
+  test("unusable operands throw instead of crashing or returning undefined", function () {
+    // Fp6.multiply used to fall through and silently return undefined here.
+    expect(() => f6.multiply({})).toThrow(/Incorrect type argument/);
+    expect(() => f2.multiply({})).toThrow(/Incorrect type argument/);
+    expect(() => f2.add(null)).toThrow(/Incorrect type argument/);
+    expect(() => f12.multiply(undefined)).toThrow(/Incorrect type argument/);
+  });
+
+  test("Field2/Field12 take a Field or number wherever they took a bigint", function () {
+    const p = Parameters.p;
+    const a = new Field2(p, 3n, 5n, false);
+    const two = new Field(2n);
+
+    expect(a.multiply(two).eq(a.multiply(2n))).toBeTruthy();
+    expect(a.multiply(2).eq(a.multiply(2n))).toBeTruthy();
+    expect(a.add(two).eq(a.add(2n))).toBeTruthy();
+    expect(a.subtract(two).eq(a.subtract(2n))).toBeTruthy();
+    expect(a.divide(two).eq(a.divide(2n))).toBeTruthy();
+
+    const x = new Field12(Parameters, 5n);
+    expect(x.multiply(two).eq(x.multiply(2n))).toBeTruthy();
+    expect(x.divide(two).eq(x.divide(2n))).toBeTruthy();
+    // the pre-existing Field2-scalar and Field12 paths still work
+    expect(x.multiply(new Field2(p, 2n, 0n, false)).eq(x.multiply(2n))).toBeTruthy();
+    expect(x.multiply(x).eq(new Field12(Parameters, 25n))).toBeTruthy();
+  });
 });

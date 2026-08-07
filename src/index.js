@@ -23,12 +23,120 @@ function modPow(base, exp, p) {
   return result;
 }
 
-// -1 is a quadratic non-residue whenever p = 3 (mod 4); otherwise search upward from 2.
+// Jacobi symbol (a/n) for odd n > 0, by the binary/reciprocity algorithm: O(log^2 n) bit
+// operations, versus a full modular exponentiation for Euler's criterion. For the prime
+// moduli this library works with, the Jacobi symbol coincides with the Legendre symbol, so
+// jacobiSymbol(a, p) === 1 means "a is a nonzero quadratic residue mod p" (0 means p | a).
+// Only valid for prime p - a composite n can return 1 for a non-residue.
+function jacobiSymbol(a, n) {
+  a = a.mod(n);
+  let result = 1;
+  while (a !== 0n) {
+    while (a % 2n === 0n) {
+      a /= 2n;
+      // (2/n) = -1 exactly when n = 3 or 5 (mod 8)
+      const nMod8 = n % 8n;
+      if (nMod8 === 3n || nMod8 === 5n) result = -result;
+    }
+    // quadratic reciprocity: swap, flipping sign when both are 3 (mod 4)
+    [a, n] = [n, a];
+    if (a % 4n === 3n && n % 4n === 3n) result = -result;
+    a = a.mod(n);
+  }
+  return n === 1n ? result : 0;
+}
+
+// -1 is a quadratic non-residue whenever p = 3 (mod 4); otherwise search upward from 2,
+// testing each candidate with the Jacobi symbol rather than Euler's criterion.
 function findQuadraticNonResidue(p) {
   if (p % 4n === 3n) return (-1n).mod(p);
   for (let k = 2n; ; k++) {
-    if (modPow(k, (p - 1n) / 2n, p) !== 1n) return k;
+    if (jacobiSymbol(k, p) !== 1) return k;
   }
+}
+
+// Operand coercion for the Fp/Fp2/Fp6/Fp12 tower. Each level accepts its own type plus any
+// lower one (embedded with zero higher components) and raw bigint/number scalars, so mixed-
+// level arithmetic like fp12.multiply(2n) or fp2.multiply(someField) works the same way
+// Field.multiply(someFp2) always has. Embedding is not a shortcut: multiplying by a scalar
+// embedded as (k, 0, ...) gives exactly the component-wise scaling the fast paths below use.
+// Each returns null for an operand it cannot interpret; callers turn that into an error.
+function toField(value, p) {
+  if (value instanceof Field) return value;
+  if (
+    typeof value === "bigint" ||
+    typeof value === "number" ||
+    typeof value === "string"
+  ) {
+    return new Field(value, p);
+  }
+  return null;
+}
+
+function toFp2(value, params) {
+  if (value instanceof Fp2) return value;
+  const scalar = toField(value, params.p);
+  return scalar === null
+    ? null
+    : new Fp2(scalar, new Field(0n, params.p), params);
+}
+
+function toFp6(value, params) {
+  if (value instanceof Fp6) return value;
+  const fp2Params = params.nonResidue.params;
+  const lower = toFp2(value, fp2Params);
+  return lower === null
+    ? null
+    : new Fp6(lower, Fp2.zero(fp2Params), Fp2.zero(fp2Params), params);
+}
+
+function toFp12(value, params) {
+  if (value instanceof Fp12) return value;
+  const lower = toFp6(value, params.fp6Params);
+  return lower === null
+    ? null
+    : new Fp12(lower, Fp6.zero(params.fp6Params), params);
+}
+
+function requireOperand(coerced, value, expected) {
+  if (coerced === null) {
+    throw new Error(
+      `Incorrect type argument: expected ${expected}, a lower tower level, or a scalar, got ${typeof value}`
+    );
+  }
+  return coerced;
+}
+
+// Field2/Field12 hold raw bigint coefficients rather than Field instances, so a scalar
+// operand there is normalized straight down to a bigint. Accepts a bigint, a number/string,
+// or a Field (whose value is taken); null for anything else.
+function toScalarBigInt(value) {
+  if (typeof value === "bigint") return value;
+  if (value instanceof Field) return value.v;
+  if (typeof value === "number" || typeof value === "string") {
+    return BigInt(value);
+  }
+  return null;
+}
+
+// Rung of the tower a value sits on; 0 for raw scalars and anything unrecognized.
+function towerLevel(value) {
+  if (value instanceof Fp12) return 4;
+  if (value instanceof Fp6) return 3;
+  if (value instanceof Fp2) return 2;
+  if (value instanceof Field) return 1;
+  return 0;
+}
+
+// When the operand sits *strictly higher* than the receiver, embed the receiver up to that
+// level so the operation completes there - the result of mixing two levels always lives at
+// the higher one. Returns null when no lift is needed (same level or lower), which is what
+// keeps same-level calls from recursing back into themselves.
+function liftTo(self, value) {
+  if (towerLevel(value) <= towerLevel(self)) return null;
+  if (value instanceof Fp12) return toFp12(self, value.params);
+  if (value instanceof Fp6) return toFp6(self, value.params);
+  return toFp2(self, value.params);
 }
 
 class Field {
@@ -52,21 +160,43 @@ class Field {
     }
   }
 
-  add = (o) => new Field((this.v + o.v).mod(this.p), this.p);
+  add = (o) => {
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.add(o);
+    const other = requireOperand(toField(o, this.p), o, "a Field");
+    return new Field((this.v + other.v).mod(this.p), this.p);
+  };
 
-  multiply = (o) =>
-    o instanceof Fp2
-      ? new Fp2(o.a.multiply(this), o.b.multiply(this), o.params)
-      : new Field((this.v * o.v).mod(this.p), this.p);
+  multiply = (o) => {
+    // An Fp2 operand scales both of its components. Kept as an explicit branch rather than
+    // going through liftTo: it predates the generic path and is cheaper than embedding.
+    if (o instanceof Fp2) {
+      return new Fp2(o.a.multiply(this), o.b.multiply(this), o.params);
+    }
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.multiply(o);
+    const other = requireOperand(toField(o, this.p), o, "a Field");
+    return new Field((this.v * other.v).mod(this.p), this.p);
+  };
 
-  subtract = (o) => new Field((this.v - o.v).mod(this.p), this.p);
+  subtract = (o) => {
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.subtract(o);
+    const other = requireOperand(toField(o, this.p), o, "a Field");
+    return new Field((this.v - other.v).mod(this.p), this.p);
+  };
 
   square = () => new Field((this.v * this.v).mod(this.p), this.p);
 
   double = () => new Field((this.v + this.v).mod(this.p), this.p);
   inverse = () => new Field(this.v.modInv(this.p), this.p);
 
-  divide = (o) => new Field((this.v * o.inverse().v).mod(this.p), this.p);
+  divide = (o) => {
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.divide(o);
+    const other = requireOperand(toField(o, this.p), o, "a Field");
+    return new Field((this.v * other.inverse().v).mod(this.p), this.p);
+  };
   negate = () => new Field((-this.v).mod(this.p), this.p);
 
   isZero = () => this.v === 0n;
@@ -153,6 +283,19 @@ class Fp2 {
   }
 
   multiply(o) {
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.multiply(o);
+    if (!(o instanceof Fp2)) {
+      // A Field or raw scalar scales both components - the same result embedding it as
+      // (k, 0) and running the general formula would give, for a fraction of the work.
+      const scalar = requireOperand(toField(o, this.params.p), o, "an Fp2");
+      return new Fp2(
+        this.a.multiply(scalar),
+        this.b.multiply(scalar),
+        this.params
+      );
+    }
+
     const aa = this.a.multiply(o.a);
     const bb = this.b.multiply(o.b);
     // ra = a1 * a2 + NON_RESIDUE * b1 * b2
@@ -167,10 +310,33 @@ class Fp2 {
     return new Fp2(ra, rb, this.params);
   }
 
-  add = (o) => new Fp2(this.a.add(o.a), this.b.add(o.b), this.params);
-  subtract = (o) => new Fp2(this.a.subtract(o.a), this.b.subtract(o.b), this.params);
+  add = (o) => {
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.add(o);
+    const other = requireOperand(toFp2(o, this.params), o, "an Fp2");
+    return new Fp2(this.a.add(other.a), this.b.add(other.b), this.params);
+  };
+
+  subtract = (o) => {
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.subtract(o);
+    const other = requireOperand(toFp2(o, this.params), o, "an Fp2");
+    return new Fp2(
+      this.a.subtract(other.a),
+      this.b.subtract(other.b),
+      this.params
+    );
+  };
+
   double = () => this.add(this);
-  divide = (o) => this.multiply(o.inverse());
+
+  divide = (o) => {
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.divide(o);
+    return this.multiply(
+      requireOperand(toFp2(o, this.params), o, "an Fp2").inverse()
+    );
+  };
 
   inverse() {
     const t0 = this.a.square();
@@ -226,18 +392,46 @@ class Fp2 {
   toString = () => this.a.toString() + ", " + this.b.toString();
 }
 
+// Norm of a + b*u from Fp2 down to Fp, for u^2 = nonResidue: N(c) = a^2 - nonResidue * b^2.
+// Equivalently c * conj(c), i.e. c^(1+p). It is the bridge that lets the residue tests below
+// run in the base field instead of in Fp2.
+function fp2Norm(a, b, nonResidue, p) {
+  return (a * a - nonResidue * (b * b)).mod(p);
+}
+
+// Whether c = a + b*u is a square in Fp2. Since c^((q-1)/2) == N(c)^((p-1)/2) (q = p^2), the
+// test collapses to a Legendre symbol on the norm - no exponentiation at all.
+function fp2IsSquare(a, b, nonResidue, p) {
+  return jacobiSymbol(fp2Norm(a, b, nonResidue, p), p) === 1;
+}
+
+// Whether c = a + b*u is a cube in Fp2.
+// When 3 | p-1 the same norm identity applies (c^((q-1)/3) == N(c)^((p-1)/3)), turning a
+// ~2*log(p)-bit Fp2 exponentiation into a single ~log(p)-bit base-field one. When p = 2
+// (mod 3) that identity does not hold - every element of Fp* is then a cube, so the norm
+// carries no information - and the Fp2 exponentiation is used directly.
+function fp2IsCube(a, b, nonResidue, p, fp2Params) {
+  if ((p - 1n) % 3n === 0n) {
+    return modPow(fp2Norm(a, b, nonResidue, p), (p - 1n) / 3n, p) === 1n;
+  }
+  const q = p * p;
+  return new Fp2(a, b, fp2Params)
+    .exp((q - 1n) / 3n)
+    .eq(new Fp2(1n, 0n, fp2Params));
+}
+
 // Finds an Fp2 sextic non-residue (neither a square nor a cube in Fp2 - field size q = p^2):
 // a natural search over (re, im) with im=0,1,2,... outer and re=1,2,3,... inner, returning the
-// first candidate that satisfies both. For Parameters.p this reproduces exactly 9+u.
+// first candidate that satisfies both. For Parameters.p this reproduces exactly 9+u, and for
+// BLS12-381 exactly 1+u - both curves' canonical published values.
 function findSexticNonResidue(fp2Params) {
-  const q = fp2Params.p * fp2Params.p;
-  const one = new Fp2(1n, 0n, fp2Params);
+  const p = fp2Params.p;
+  const nonResidue = fp2Params.nonResidue.v;
   for (let im = 0n; im < 50n; im++) {
     for (let re = 1n; re < 50n; re++) {
-      const candidate = new Fp2(re, im, fp2Params);
-      const notSquare = !candidate.exp((q - 1n) / 2n).eq(one);
-      const notCube = !candidate.exp((q - 1n) / 3n).eq(one);
-      if (notSquare && notCube) return candidate;
+      if (fp2IsSquare(re, im, nonResidue, p)) continue;
+      if (fp2IsCube(re, im, nonResidue, p, fp2Params)) continue;
+      return new Fp2(re, im, fp2Params);
     }
   }
   throw new Error("could not find a sextic non-residue in Fp2");
@@ -359,13 +553,21 @@ class Fp6 {
 
       return new Fp6(ra, rb, rc, this.params);
     }
-    if (o instanceof Fp2) {
-      const ra = this.a.multiply(o);
-      const rb = this.b.multiply(o);
-      const rc = this.c.multiply(o);
-
-      return new Fp6(ra, rb, rc, this.params);
-    }
+    // An Fp2 (or, since normalization, a Field or raw scalar) scales all three components.
+    // Previously anything that was not an Fp6 or Fp2 fell through and returned undefined.
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.multiply(o);
+    const scalar = requireOperand(
+      toFp2(o, this.params.nonResidue.params),
+      o,
+      "an Fp6"
+    );
+    return new Fp6(
+      this.a.multiply(scalar),
+      this.b.multiply(scalar),
+      this.c.multiply(scalar),
+      this.params
+    );
   }
 
   mulByNonResidue() {
@@ -377,17 +579,25 @@ class Fp6 {
   }
 
   add(o) {
-    const ra = this.a.add(o.a);
-    const rb = this.b.add(o.b);
-    const rc = this.c.add(o.c);
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.add(o);
+    const other = requireOperand(toFp6(o, this.params), o, "an Fp6");
+
+    const ra = this.a.add(other.a);
+    const rb = this.b.add(other.b);
+    const rc = this.c.add(other.c);
 
     return new Fp6(ra, rb, rc, this.params);
   }
 
   subtract(o) {
-    const ra = this.a.subtract(o.a);
-    const rb = this.b.subtract(o.b);
-    const rc = this.c.subtract(o.c);
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.subtract(o);
+    const other = requireOperand(toFp6(o, this.params), o, "an Fp6");
+
+    const ra = this.a.subtract(other.a);
+    const rb = this.b.subtract(other.b);
+    const rc = this.c.subtract(other.c);
 
     return new Fp6(ra, rb, rc, this.params);
   }
@@ -443,7 +653,13 @@ class Fp6 {
     return !(this.c != null ? !this.c.eq(fp6.c) : fp6.c != null);
   }
 
-  divide = (o) => this.multiply(o.inverse());
+  divide = (o) => {
+    const lifted = liftTo(this, o);
+    if (lifted !== null) return lifted.divide(o);
+    return this.multiply(
+      requireOperand(toFp6(o, this.params), o, "an Fp6").inverse()
+    );
+  };
 
   exp(k) {
     let w = this;
@@ -605,11 +821,32 @@ class Fp12 {
     );
   }
 
-  add = (o) => new Fp12(this.a.add(o.a), this.b.add(o.b), this.params);
+  add = (o) => {
+    const other = requireOperand(toFp12(o, this.params), o, "an Fp12");
+    return new Fp12(this.a.add(other.a), this.b.add(other.b), this.params);
+  };
 
-  divide = (o) => this.multiply(o.inverse());
+  divide = (o) =>
+    this.multiply(
+      requireOperand(toFp12(o, this.params), o, "an Fp12").inverse()
+    );
 
   multiply(o) {
+    if (!(o instanceof Fp12)) {
+      // An Fp6 or lower scales both components - what embedding it as (o, 0) and running
+      // the general formula below would produce, at half the Fp6 multiplications.
+      const scalar = requireOperand(
+        toFp6(o, this.params.fp6Params),
+        o,
+        "an Fp12"
+      );
+      return new Fp12(
+        this.a.multiply(scalar),
+        this.b.multiply(scalar),
+        this.params
+      );
+    }
+
     const a2 = o.a,
       b2 = o.b;
     const a1 = this.a,
@@ -624,7 +861,14 @@ class Fp12 {
     return new Fp12(ra, rb, this.params);
   }
 
-  subtract = (o) => new Fp12(this.a.subtract(o.a), this.b.subtract(o.b), this.params);
+  subtract = (o) => {
+    const other = requireOperand(toFp12(o, this.params), o, "an Fp12");
+    return new Fp12(
+      this.a.subtract(other.a),
+      this.b.subtract(other.b),
+      this.params
+    );
+  };
 
   inverse() {
     const t0 = this.a.square();
@@ -798,8 +1042,9 @@ class Field2 {
         false
       );
     }
-    if (typeof v === "bigint") {
-      return new Field2(this.p, (this.re + v).mod(this.p), this.im, false);
+    const scalar = toScalarBigInt(v);
+    if (scalar !== null) {
+      return new Field2(this.p, (this.re + scalar).mod(this.p), this.im, false);
     }
     throw new Error("Incorrect type argument");
   }
@@ -816,8 +1061,9 @@ class Field2 {
         false
       );
     }
-    if (typeof v === "bigint") {
-      return new Field2(this.p, (this.re - v).mod(this.p), this.im, false);
+    const scalar = toScalarBigInt(v);
+    if (scalar !== null) {
+      return new Field2(this.p, (this.re - scalar).mod(this.p), this.im, false);
     }
     throw new Error("Incorrect type argument");
   }
@@ -828,11 +1074,12 @@ class Field2 {
       const im = (this.re * v.im + this.im * v.re).mod(this.p);
       return new Field2(this.p, re, im, false);
     }
-    if (typeof v === "bigint") {
+    const scalar = toScalarBigInt(v);
+    if (scalar !== null) {
       return new Field2(
         this.p,
-        (this.re * v).mod(this.p),
-        (this.im * v).mod(this.p),
+        (this.re * scalar).mod(this.p),
+        (this.im * scalar).mod(this.p),
         false
       );
     }
@@ -858,8 +1105,9 @@ class Field2 {
     if (v instanceof Field2) {
       return this.multiply(v.inverse());
     }
-    if (typeof v === "bigint") {
-      return this.multiply(new Field2(this.p, v).inverse());
+    const scalar = toScalarBigInt(v);
+    if (scalar !== null) {
+      return this.multiply(new Field2(this.p, scalar).inverse());
     }
     throw new Error("Incorrect type argument");
   }
@@ -897,11 +1145,27 @@ class Field2 {
   toString = () => "[" + this.re.toString() + "," + this.im.toString() + "]";
 }
 
-function fp2FindNonResidue(p, exponent, one) {
+// Finds an r-th power non-residue in Field2 (which fixes u^2 = -1, so the norm is re^2 + im^2),
+// for prime r. Uses the same base-field residue tests as findSexticNonResidue: a Legendre
+// symbol for r = 2, and the norm identity for r = 3 whenever 3 | p-1.
+function fp2FindNonResidue(p, r) {
+  const minusOne = (-1n).mod(p);
+  const one = new Field2(p, 1n);
+  const q = p * p;
+  const cubeViaNorm = r === 3n && (p - 1n) % 3n === 0n;
+
   for (let re = 1n; re < 50n; re++) {
     for (let im = 0n; im < 50n; im++) {
-      const candidate = new Field2(p, re, im, false);
-      if (!candidate.exp(exponent).eq(one)) return candidate;
+      const norm = fp2Norm(re, im, minusOne, p);
+      let isResidue;
+      if (r === 2n) {
+        isResidue = jacobiSymbol(norm, p) === 1;
+      } else if (cubeViaNorm) {
+        isResidue = modPow(norm, (p - 1n) / 3n, p) === 1n;
+      } else {
+        isResidue = new Field2(p, re, im, false).exp((q - 1n) / r).eq(one);
+      }
+      if (!isResidue) return new Field2(p, re, im, false);
     }
   }
   return null;
@@ -924,7 +1188,7 @@ function fp2NthRoot(a, r) {
   }
   const order = r ** s;
 
-  const nonResidue = fp2FindNonResidue(p, (q - 1n) / r, one);
+  const nonResidue = fp2FindNonResidue(p, r);
   if (nonResidue === null) {
     throw new Error("could not find a non-residue element in Fp2");
   }
@@ -942,22 +1206,63 @@ function fp2NthRoot(a, r) {
   return null;
 }
 
-// Field12 represents Fp12 directly as Fp[x]/(x^12 - 18x^6 + 82) - the standard BN254 FQ12
-// modulus polynomial (as used by e.g. py_ecc's optimized_bn128) - rather than as the
-// Fp2/Fp6/Fp12 tower built above. Elements are stored packed as 6 Field2 pairs (this.v),
-// which is how add/subtract/negate/scalar-multiply operate directly; the full Field12
-// multiply/inverse unpack to the 12 flat Fp coefficients (via split()/join()) to do the
-// polynomial arithmetic, mirroring that reference implementation.
+// Field12 represents Fp12 directly as Fp[x]/(x^12 + c6*x^6 + c0) - for BN254 the standard
+// FQ12 modulus polynomial x^12 - 18x^6 + 82 (as used by e.g. py_ecc's optimized_bn128) -
+// rather than as the Fp2/Fp6/Fp12 tower built above. Elements are stored packed as 6 Field2
+// pairs (this.v), which is how add/subtract/negate/scalar-multiply operate directly; the full
+// Field12 multiply/inverse unpack to the 12 flat Fp coefficients (via split()/join()) to do
+// the polynomial arithmetic, mirroring that reference implementation.
 //
-// `bn` is any {p, n} pair of curve parameters (Parameters from this package satisfies this
-// shape directly); `p` must be the same modulus used to build the Field2 coefficients. `bn`
-// may also carry an optional `modulusCoeffs` (12 bigints, low-to-high degree, monic implied)
-// to use a different degree-12 modulus polynomial; unlike the Frobenius coefficients derived
-// automatically elsewhere in this file, finding an irreducible degree-12 polynomial for an
-// arbitrary prime is genuine computational algebra, not something this library derives for
-// you - omit it to keep the default BN254 polynomial below.
+// `bn` is any {p, n} pair of curve parameters (Parameters and Bls12381Parameters both satisfy
+// this shape directly); `p` must be the same modulus used to build the Field2 coefficients.
+// The modulus polynomial is derived from `p` automatically (see deriveField12ModulusCoeffs);
+// `bn` may also carry an explicit `modulusCoeffs` (12 bigints, low-to-high degree, monic
+// implied) to override that choice.
 const FIELD12_DEGREE = 12;
 const FIELD12_MODULUS_COEFFS = [82n, 0n, 0n, 0n, 0n, 0n, -18n, 0n, 0n, 0n, 0n, 0n];
+
+// The degree-12 modulus polynomial is not arbitrary: it is the minimal polynomial over Fp of
+// the tower's own generator w, where w^6 = xi = a + b*u is the Fp6 sextic non-residue and
+// u^2 = nr is the Fp2 one. From w^6 - a = b*u, squaring gives
+//     w^12 - 2a*w^6 + (a^2 - nr*b^2) = 0,
+// so coeffs[0] = a^2 - nr*b^2 and coeffs[6] = -2a (all others zero), in the low-to-high,
+// monic-implied convention used above. For BN254 (xi = 9+u, nr = -1) this reproduces exactly
+// [82, 0, 0, 0, 0, 0, -18, 0, 0, 0, 0, 0]; for BLS12-381 (xi = 1+u) it gives x^12 - 2x^6 + 2.
+// Irreducibility follows from xi being a sextic non-residue, and is checked by unit tests.
+function deriveField12ModulusCoeffs(fp6Params) {
+  const p = fp6Params.p;
+  const xi = fp6Params.nonResidue;
+  const a = xi.a.v;
+  const b = xi.b.v;
+  if (b === 0n) {
+    throw new Error(
+      "cannot derive a degree-12 modulus polynomial from a sextic non-residue with no u-component"
+    );
+  }
+  const nonResidue = xi.params.nonResidue.v;
+  const coeffs = new Array(FIELD12_DEGREE).fill(0n);
+  coeffs[0] = (a * a - nonResidue * (b * b)).mod(p);
+  coeffs[6] = (-2n * a).mod(p);
+  return coeffs;
+}
+
+// Deriving the polynomial means deriving the whole Fp2/Fp6 tower for that prime, so results
+// are memoized per modulus. BN254 is seeded with its precomputed constants (a unit test
+// asserts the derivation reproduces them exactly), keeping the default path allocation-free.
+const field12ModulusCoeffsCache = new Map([
+  [Parameters.p, FIELD12_MODULUS_COEFFS],
+]);
+
+function field12ModulusCoeffsFor(bn) {
+  if (bn.modulusCoeffs) return bn.modulusCoeffs;
+  const cached = field12ModulusCoeffsCache.get(bn.p);
+  if (cached) return cached;
+  const coeffs = deriveField12ModulusCoeffs(
+    deriveFp6Params(deriveFp2Params(bn.p))
+  );
+  field12ModulusCoeffsCache.set(bn.p, coeffs);
+  return coeffs;
+}
 
 function field12PolyDeg(poly) {
   let d = poly.length - 1;
@@ -1082,10 +1387,11 @@ class Field12 {
   }
 
   divide(k) {
-    if (typeof k === "bigint" || k instanceof Field2) {
+    const scalar = k instanceof Field2 ? k : toScalarBigInt(k);
+    if (scalar !== null) {
       return new Field12(
         this.bn,
-        this.v.map((c) => c.divide(k))
+        this.v.map((c) => c.divide(scalar))
       );
     }
     if (k instanceof Field12) {
@@ -1112,10 +1418,11 @@ class Field12 {
   }
 
   multiply(k) {
-    if (typeof k === "bigint" || k instanceof Field2) {
+    const scalar = k instanceof Field2 ? k : toScalarBigInt(k);
+    if (scalar !== null) {
       return new Field12(
         this.bn,
-        this.v.map((c) => c.multiply(k))
+        this.v.map((c) => c.multiply(scalar))
       );
     }
     if (k instanceof Field12) {
@@ -1130,7 +1437,7 @@ class Field12 {
         this.split(),
         k.split(),
         this.bn.p,
-        this.bn.modulusCoeffs
+        field12ModulusCoeffsFor(this.bn)
       );
       return this.join(product);
     }
@@ -1145,7 +1452,11 @@ class Field12 {
   divV = () => this.divide(this.join([0n, 1n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n]));
 
   inverse() {
-    const inv = field12PolyInverse(this.split(), this.bn.p, this.bn.modulusCoeffs);
+    const inv = field12PolyInverse(
+      this.split(),
+      this.bn.p,
+      field12ModulusCoeffsFor(this.bn)
+    );
     return this.join(inv);
   }
 
@@ -1205,4 +1516,6 @@ module.exports = {
   deriveFp12Params,
   findQuadraticNonResidue,
   findSexticNonResidue,
+  deriveField12ModulusCoeffs,
+  jacobiSymbol,
 };

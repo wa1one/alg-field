@@ -54,7 +54,7 @@ Base prime field element, `v mod p`.
 - `static NON_RESIDUE` — the quadratic non-residue used to build `Fp2` for `Parameters.p`
   (derived at load time via `findQuadraticNonResidue`, not hardcoded).
 - `static _2_INV` — the inverse of `2` mod `Parameters.p`.
-- `.add(o)` / `.subtract(o)` / `.multiply(o)` / `.divide(o)` — field arithmetic against another `Field`. `.multiply(o)` also accepts an `Fp2`, scaling both of its components and returning an `Fp2`.
+- `.add(o)` / `.subtract(o)` / `.multiply(o)` / `.divide(o)` — field arithmetic against another `Field`, a raw `bigint`/`number`, or any higher tower level (see [Mixing tower levels](#mixing-tower-levels)).
 - `.square()` / `.double()` / `.negate()` — shorthand arithmetic.
 - `.inverse()` — the multiplicative inverse, via `BigInt.prototype.modInv`.
 - `.exp(k)` — modular exponentiation by `k` (`bigint` or coercible).
@@ -81,7 +81,7 @@ Quadratic extension field, `a + b·u` where `u²` is this instance's own non-res
   below. For an instance's own construction non-residue use `instance.params.nonResidue`.
 - `static FROBENIUS_COEFFS_B` — the default (BN254) Frobenius coefficient table, indexed by
   `power % 2`; a custom-params instance uses `instance.params.frobeniusCoeffsB` instead.
-- `.add(o)` / `.subtract(o)` / `.multiply(o)` / `.divide(o)` — field arithmetic against another `Fp2`.
+- `.add(o)` / `.subtract(o)` / `.multiply(o)` / `.divide(o)` — field arithmetic against another `Fp2`, a `Field`/`bigint`/`number` scalar, or a higher level (see [Mixing tower levels](#mixing-tower-levels)).
 - `.square()` / `.double()` / `.negate()` — shorthand arithmetic.
 - `.inverse()` — the multiplicative inverse.
 - `.mulByNonResidue()` — multiplies by the default `Fp6`-level non-residue (`Fp2.NON_RESIDUE`);
@@ -108,8 +108,7 @@ Cubic extension of `Fp2`, `a + b·v + c·v²` where `v³` is this instance's own
   methods, so a custom-curve `Fp6` behaves correctly without touching this static).
 - `static FROBENIUS_COEFFS_B`, `static FROBENIUS_COEFFS_C` — the default Frobenius coefficient
   tables, indexed by `power % 6`; a custom-params instance uses `instance.params.frobeniusCoeffsB`/`frobeniusCoeffsC`.
-- `.add(o)` / `.subtract(o)` / `.divide(o)` — field arithmetic against another `Fp6`.
-- `.multiply(o)` — accepts another `Fp6`, or an `Fp2` scalar that's applied component-wise.
+- `.add(o)` / `.subtract(o)` / `.multiply(o)` / `.divide(o)` — field arithmetic against another `Fp6`, or an `Fp2`/`Field`/`bigint`/`number` scalar applied component-wise (see [Mixing tower levels](#mixing-tower-levels)).
 - `.square()` / `.double()` / `.negate()` — shorthand arithmetic.
 - `.inverse()` — the multiplicative inverse.
 - `.mulByNonResidue()` — multiplies by this instance's own non-residue (rotates components);
@@ -134,7 +133,7 @@ Quadratic extension of `Fp6`, `a + b·w`. Used as the pairing target group.
 - `static _0`, `static _1` — shorthand for `Fp12.zero()`/`Fp12.one()` with the default params.
 - `static FROBENIUS_COEFFS_B` — the default Frobenius coefficient table, indexed by
   `power % 12`; a custom-params instance uses `instance.params.frobeniusCoeffsB`.
-- `.add(o)` / `.subtract(o)` / `.divide(o)` / `.multiply(o)` — field arithmetic against another `Fp12`.
+- `.add(o)` / `.subtract(o)` / `.divide(o)` / `.multiply(o)` — field arithmetic against another `Fp12`, or an `Fp6`/`Fp2`/`Field`/`bigint`/`number` scalar applied component-wise (see [Mixing tower levels](#mixing-tower-levels)).
 - `.square()` / `.double()` / `.negate()` — shorthand arithmetic.
 - `.inverse()` — the multiplicative inverse.
 - `.mulBy024(ell0, ellVW, ellVV)` — sparse multiplication by an element of the form used in Miller-loop line evaluations; equivalent to a dense `.multiply()` by the corresponding sparse `Fp12`.
@@ -146,6 +145,32 @@ Quadratic extension of `Fp6`, `a + b·w`. Used as the pairing target group.
 - `.isZero()` — `true` if both components are `0`.
 - `.eq(o)` — component-wise equality; `true` for `this === o`, `false` for non-`Fp12` values.
 - `.toString()` — `"[[a] [b]]"`.
+
+## Mixing tower levels
+
+`Field` ⊂ `Fp2` ⊂ `Fp6` ⊂ `Fp12` is a tower, and arithmetic works across it: `add`,
+`subtract`, `multiply`, and `divide` each accept **their own type, any level below it, or a
+raw `bigint`/`number` scalar**. The result of mixing two levels always lives at the higher of
+the two, so a lower-level receiver lifts itself before operating.
+
+```js
+const k = new Field(3n);
+const f2 = new Fp2(5n, 7n);
+const f12 = Fp12._1;
+
+f2.multiply(k); // Fp2 — scales both components
+f2.multiply(3n); // same, from a raw scalar
+f12.add(2n); // Fp12
+k.multiply(f2); // Fp2 — commutes with f2.multiply(k)
+k.subtract(f2); // Fp2 — k is lifted, so this is -(f2 - k)
+```
+
+Embedding is not an approximation: multiplying by a scalar embedded as `(k, 0, …)` is exactly
+the component-wise scaling the fast paths perform, which the test suite asserts directly.
+
+An operand that can't be interpreted throws `Incorrect type argument` naming the expected type.
+`Field2`/`Field12` follow the same rule for the scalars they accept (`bigint`, `number`, or a
+`Field`), alongside `Field2` operands.
 
 ## Tunable curve parameters
 
@@ -188,13 +213,28 @@ const one = Fp12.one(fp12Params);
   `nonResidueOverride` to pick one yourself. For `Parameters.p` this reproduces the canonical
   `9 + u` exactly.
 - `deriveFp12Params(fp6Params)` — returns `{ p, frobeniusCoeffsB, fp6Params }`.
+- `deriveField12ModulusCoeffs(fp6Params)` — returns the 12 `bigint` coefficients of
+  [`Field12`](#field12)'s degree-12 modulus polynomial for that tower. `Field12` calls this
+  itself when needed, so you only need it to inspect or override the choice.
 - `findQuadraticNonResidue(p)` / `findSexticNonResidue(fp2Params)` — the underlying non-residue
   search, exposed in case you want to pick a non-residue via a different strategy than
   `deriveFp2Params`/`deriveFp6Params`'s defaults.
+- `jacobiSymbol(a, p)` — the Jacobi symbol, returning `1` / `-1` / `0`. For the prime moduli
+  this library targets it is the Legendre symbol, so `1` means "`a` is a nonzero quadratic
+  residue mod `p`" — a drop-in, much cheaper replacement for `a^((p-1)/2) mod p`. It is what
+  makes the non-residue searches above cheap; **only meaningful for prime `p`** (a composite
+  modulus can return `1` for a non-residue).
 
 Every method on `Fp2`/`Fp6`/`Fp12` that returns a new instance carries `this.params` forward
 automatically, so a tower built this way stays self-consistent through chained calls without
 needing to pass `params` at every step.
+
+The searches don't test candidates by brute-force exponentiation. Quadratic residuosity is
+decided with a Jacobi symbol (`O(log² p)` bit operations, no modular exponentiation at all),
+and the `Fp2` square/cube tests are pushed down into the base field through the norm map
+`N(a + b·u) = a² − nr·b²`, using `c^((q−1)/2) = N(c)^((p−1)/2)` and — when `3 | p−1` —
+`c^((q−1)/3) = N(c)^((p−1)/3)`. Deriving the BLS12-381 tower this way takes roughly a sixth
+of the time the naive search did, and picks exactly the same non-residues.
 
 ### Using with BLS12-381
 
@@ -226,10 +266,15 @@ const one = Fp12.one(fp12Params);
 The derived non-residues aren't just *some* valid choice — they match BLS12-381's actual
 published convention exactly (`Fp2`'s is `-1`, `Fp6`'s is `1 + u`), confirmed in the test suite.
 
-`Field12` (the direct `Fp[x]/(x¹²−18x⁶+82)` polynomial representation) is **not** covered by
-this — that modulus polynomial is BN254-specific, and BLS12-381 would need a different one
-that this library doesn't ship (see the note on `bn.modulusCoeffs` in `Field12`'s docs above).
-The `Fp2`/`Fp6`/`Fp12` tower above doesn't have this limitation.
+[`Field12`](#field12) (the direct flat-polynomial representation) works on BLS12-381 too — it
+derives its own degree-12 modulus polynomial, `x¹² − 2x⁶ + 2` here, from the tower's sextic
+non-residue:
+
+```js
+const { Field12, Bls12381Parameters } = require("alg-field");
+
+const one = new Field12(Bls12381Parameters, 1n); // no modulusCoeffs needed
+```
 
 ### Using with secp256k1
 
@@ -282,20 +327,26 @@ pairing-adjacent helpers (`mulI`/`mulV`, `sqrt`/`cbrt`) that the `Fp2` tower abo
 
 ### `Field12`
 
-`Fp12` represented directly as `Fp[x]/(x¹² − 18x⁶ + 82)` — the standard BN254 `FQ12` modulus
-polynomial (as used by e.g. `py_ecc`) — rather than as the `Fp2`/`Fp6`/`Fp12` tower above.
-Elements are stored as 6 `Field2` pairs (`.v`); full multiplication and inversion unpack to the
-12 flat base-field coefficients to do the polynomial arithmetic (convolution + reduction for
-multiply, extended Euclidean algorithm for inverse), then repack.
+`Fp12` represented directly as `Fp[x]/(x¹² + c₆x⁶ + c₀)` — for BN254 the standard `FQ12`
+modulus polynomial `x¹² − 18x⁶ + 82` (as used by e.g. `py_ecc`) — rather than as the
+`Fp2`/`Fp6`/`Fp12` tower above. Elements are stored as 6 `Field2` pairs (`.v`); full
+multiplication and inversion unpack to the 12 flat base-field coefficients to do the polynomial
+arithmetic (convolution + reduction for multiply, extended Euclidean algorithm for inverse),
+then repack.
 
-- `new Field12(bn, k)` — `bn` is any `{p, n}` curve-parameter pair (`Parameters` from this
-  package works directly); `k` is a `bigint` (embeds a scalar), an array of 6 `Field2`
-  (the raw `.v`), or omitted-shape fallback. `new Field12(other)` (single `Field12` argument)
-  clones `other`. `bn` may also carry an optional `modulusCoeffs` (12 `bigint`s, low-to-high
-  degree) to use a different degree-12 modulus polynomial in place of the default BN254 one —
-  unlike the rest of this library's curve parameters, this one isn't auto-derivable (finding
-  an irreducible degree-12 polynomial for an arbitrary prime is genuine computational algebra),
-  so you have to supply it yourself if you need a non-default one.
+The modulus polynomial is derived from `bn.p`, not hardcoded, so `Field12` works for any
+supported prime. It is the minimal polynomial over `Fp` of the tower's generator `w`: from
+`w⁶ = ξ = a + b·u` (the `Fp6` sextic non-residue) and `u² = nr`, squaring `w⁶ − a = b·u` gives
+`x¹² − 2a·x⁶ + (a² − nr·b²)`. For BN254 (`ξ = 9 + u`) that is exactly `x¹² − 18x⁶ + 82`; for
+BLS12-381 (`ξ = 1 + u`), `x¹² − 2x⁶ + 2`. Results are memoized per modulus, so the derivation
+happens at most once per curve.
+
+- `new Field12(bn, k)` — `bn` is any `{p, n}` curve-parameter pair (`Parameters` and
+  `Bls12381Parameters` both work directly); `k` is a `bigint` (embeds a scalar), an array of 6
+  `Field2` (the raw `.v`), or omitted-shape fallback. `new Field12(other)` (single `Field12`
+  argument) clones `other`. `bn` may also carry an optional `modulusCoeffs` (12 `bigint`s,
+  low-to-high degree, monic implied) to override the derived modulus polynomial described
+  above.
 - `.zero()` / `.one()` — identity checks.
 - `.eq(o)` — component-wise equality; `false` for non-`Field12` values.
 - `.add(k)` / `.subtract(k)` — field arithmetic against another `Field12` (same `bn.p`).
