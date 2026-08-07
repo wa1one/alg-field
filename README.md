@@ -3,9 +3,11 @@
 Algebraic fields (`Fp`, `Fp2`, `Fp6`, `Fp12`) over a configurable prime, defaulting to the
 alt_bn128 (BN254) curve parameters used by Ethereum precompiles.
 
-Every curve-specific constant (non-residues, Frobenius coefficient tables) is derived at
-runtime from the modulus rather than hardcoded, so the tower works for any prime `p ≡ 3 (mod
-4)` — not just BN254's. See [Tunable curve parameters](#tunable-curve-parameters).
+No curve-specific constant is baked into the algorithms: every non-residue and Frobenius
+coefficient table is *derived* from the modulus, so the `Fp2`/`Fp6`/`Fp12` tower works for any
+prime — not just BN254's. (The BN254 defaults themselves ship precomputed so importing the
+package stays fast; a unit test re-runs the derivation and asserts it reproduces them exactly.)
+See [Tunable curve parameters](#tunable-curve-parameters).
 
 ## Install
 
@@ -175,9 +177,11 @@ An operand that can't be interpreted throws `Incorrect type argument` naming the
 ## Tunable curve parameters
 
 `Field`, `Fp2`, `Fp6`, and `Fp12` all default to BN254 (`Parameters.p`), but every non-residue
-and Frobenius coefficient table above is derived at runtime from the modulus, not hardcoded —
-so the same classes work for any prime `p ≡ 3 (mod 4)` (required so `-1` has no square root in
-`Fp`, matching this tower's `u² = -1` convention for `Fp2`).
+and Frobenius coefficient table above is derived from the modulus rather than hardcoded, so the
+same classes work for **any prime**. The `Fp2` non-residue is whatever
+`findQuadraticNonResidue` picks for that modulus (`-1` when `p ≡ 3 (mod 4)`, otherwise the
+smallest non-residue at or above `2`), so there is no `p ≡ 3 (mod 4)` requirement here — that
+constraint applies only to [`Field2`](#field2)/[`Field12`](#field12), which fix `u² = -1`.
 
 ```js
 const {
@@ -190,7 +194,7 @@ const {
   deriveFp12Params,
 } = require("alg-field");
 
-const p = 10007n; // any prime with p % 4n === 3n
+const p = 10007n; // any prime
 
 const fp2Params = deriveFp2Params(p);
 const fp6Params = deriveFp6Params(fp2Params);
@@ -204,9 +208,8 @@ const one = Fp12.one(fp12Params);
 ```
 
 - `deriveFp2Params(p, nonResidueOverride?)` — returns `{ p, nonResidue, frobeniusCoeffsB }`.
-  Picks `-1` as the non-residue when `p ≡ 3 (mod 4)` (always, given the constraint above),
-  otherwise searches upward from `2`; pass a `Field` as `nonResidueOverride` to pick one
-  yourself instead.
+  Picks `-1` as the non-residue when `p ≡ 3 (mod 4)`, otherwise searches upward from `2`;
+  pass a `Field` as `nonResidueOverride` to pick one yourself instead.
 - `deriveFp6Params(fp2Params, nonResidueOverride?)` — returns
   `{ p, nonResidue, frobeniusCoeffsB, frobeniusCoeffsC }`. Searches `Fp2` elements (in
   `(re, im)` order) for the first that's neither a square nor a cube; pass an `Fp2` as
@@ -305,7 +308,8 @@ const y = rhs.exp((p + 1n) / 4n); // sqrt(rhs), since rhs is a quadratic residue
 ### `Field2`
 
 An independent `Fp2 = Fp[i]/(i² + 1)` implementation (`i² = -1`), separate from the `Fp2` tower
-above. Only forms a field when the modulus is `≡ 3 (mod 4)` (so `-1` has no square root in `Fp`);
+above. Only forms a field when the modulus is `≡ 3 (mod 4)` — otherwise `-1` is a square, `x² + 1`
+factors, and the ring has zero divisors whose `.inverse()` throws;
 `Parameters.p` satisfies this. Backs `Field12`'s direct polynomial representation and adds a few
 pairing-adjacent helpers (`mulI`/`mulV`, `sqrt`/`cbrt`) that the `Fp2` tower above doesn't expose.
 

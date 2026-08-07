@@ -1001,3 +1001,56 @@ describe("mixed-level operand normalization", function () {
     expect(x.multiply(x).eq(new Field12(Parameters, 25n))).toBeTruthy();
   });
 });
+
+// The Fp2/Fp6/Fp12 tower has no p = 3 (mod 4) requirement: its Fp2 non-residue is whatever
+// findQuadraticNonResidue picks for the modulus. That constraint belongs to Field2/Field12,
+// which hardcode u^2 = -1 and therefore need -1 to actually be a non-residue.
+describe("tower works for p = 1 (mod 4)", function () {
+  const p = 10009n; // prime, = 1 (mod 4), so -1 IS a square here
+
+  test("the fixture really is 1 (mod 4) with -1 a square", function () {
+    expect(p % 4n).toEqual(1n);
+    expect(jacobiSymbol((-1n).mod(p), p)).toEqual(1);
+  });
+
+  test("findQuadraticNonResidue falls back to a search instead of -1", function () {
+    const nr = findQuadraticNonResidue(p);
+    expect(nr).not.toEqual(p - 1n);
+    expect(jacobiSymbol(nr, p)).toEqual(-1);
+  });
+
+  test("Fp2/Fp6/Fp12 all satisfy field axioms there", function () {
+    const fp2Params = deriveFp2Params(p);
+    const fp6Params = deriveFp6Params(fp2Params);
+    const fp12Params = deriveFp12Params(fp6Params);
+
+    const a = new Fp2(3n, 5n, fp2Params);
+    const b = new Fp2(7n, 2n, fp2Params);
+    expect(a.multiply(a.inverse()).eq(Fp2.one(fp2Params))).toBeTruthy();
+
+    const a6 = new Fp6(a, b, a, fp6Params);
+    expect(a6.multiply(a6.inverse()).eq(Fp6.one(fp6Params))).toBeTruthy();
+
+    const a12 = new Fp12(a6, new Fp6(b, a, b, fp6Params), fp12Params);
+    expect(a12.multiply(a12.inverse()).eq(Fp12.one(fp12Params))).toBeTruthy();
+  });
+
+  test("Field2 by contrast has zero divisors there, so it is only a ring", function () {
+    // s^2 = -1 makes (s + i)(s - i) = s^2 - i^2 = 0 with neither factor zero.
+    let s = null;
+    for (let k = 2n; k < p; k++) {
+      if ((k * k) % p === p - 1n) {
+        s = k;
+        break;
+      }
+    }
+    expect(s).not.toBeNull();
+
+    const z1 = new Field2(p, s, 1n, false);
+    const z2 = new Field2(p, s, p - 1n, false);
+    expect(z1.zero()).toBeFalsy();
+    expect(z2.zero()).toBeFalsy();
+    expect(z1.multiply(z2).zero()).toBeTruthy();
+    expect(() => z1.inverse()).toThrow();
+  });
+});
