@@ -122,6 +122,14 @@ describe("BigInt extensions", function () {
     expect(10n.mod(7n)).toEqual(3n);
   });
 
+  test("mod handles a negative exact multiple of the modulus", function () {
+    // Regression test: an earlier implementation checked the sign of the
+    // *original* value rather than the remainder, so an exact multiple
+    // (remainder 0) incorrectly got the modulus added back on top of it.
+    expect((-6n).mod(3n)).toEqual(0n);
+    expect((-21n).mod(7n)).toEqual(0n);
+  });
+
   test("testBit reads individual bits", function () {
     const v = 0b1010n;
     expect(v.testBit(0)).toBe(false);

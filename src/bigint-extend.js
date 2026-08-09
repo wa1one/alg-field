@@ -60,7 +60,8 @@ BigInt.prototype.bitLength = function () {
 };
 
 BigInt.prototype.mod = function (p) {
-  return this < 0n ? (this % p) + p : this % p;
+  const a = this % p;
+  return a < 0n ? a + p : a;
 };
 
 BigInt.prototype.testBit = function (n) {
